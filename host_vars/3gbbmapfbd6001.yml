@@ -1,0 +1,17 @@
+---
+provision_ipaddress: 10.72.127.120
+provision_netmask: 255.255.255.0
+provision_gateway: 10.72.127.254
+provision_nameservers: 10.72.136.53 10.72.136.4 10.120.8.2
+provision_domain: national.core.bbc.co.uk
+provision_snmpdlocation: BBC Birmingham, Self Provide Cluster
+provision_vm_cluster: BM Test & Staging
+provision_vm_esxi_datacenter: Birmingham
+provision_vm_esxi_hostname: 3gbbmvhesx6011.national.core.bbc.co.uk
+provision_vm_vcenter_hostname: 3gbv1apvmw1001.national.core.bbc.co.uk
+provision_vm_datastore: TS S1 VM IEP
+provision_vm_network: TS IEP Production Edit Network
+provision_vm_mac_address:
+iso_datastore: BSC S1 DS BACKUP
+ansible_host: "{{ provision_ipaddress }}"
+ansible_python_interpreter: /usr/bin/python3

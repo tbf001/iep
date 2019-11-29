@@ -1,0 +1,125 @@
+# Setup Mysql Active Server for database replication
+- name: Setup Mysql Replication on Active CC server
+  hosts: shelf
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+#  - name: Copy multipath configuration for MSA204 to shelf
+#    copy:
+#      src: "{{ playbook_dir }}/resources/multipath.conf"
+#      dest: /etc/multipath.conf
+#      owner: root
+#      group: root
+#      mode: 0755
+
+#  - name: Modify Shelf Virtual Machine add additional NICs
+#    delegate_to: localhost
+#    vsphere_guest:
+#      vcenter_hostname: "{{ provision_vm_vcenter_hostname }}"
+#      validate_certs: no
+#      username: "{{ ansible_user }}@national"
+#      password: "{{ ansible_password }}"
+#      guest: "{{ inventory_hostname_short }}"
+#      state: reconfigured
+#      vm_nic:
+#        nic2:
+#          type: vmxnet3
+#          network: "{{ vm_network2 }}"
+#          network_type: standard
+#        nic3:
+#          type: vmxnet3
+#          network: "{{ vm_network3 }}"
+#          network_type: standard
+#    delegate_to: localhost
+
+  - name: Modify Shelf Virtual Machine add additional NICs
+    vmware_guest:
+      hostname: "{{ provision_vm_vcenter_hostname }}"
+      username: "{{ ansible_user }}@national"
+      password: "{{ ansible_password }}"
+      datacenter: "{{ provision_vm_esxi_datacenter }}"
+      cluster: "{{ provision_vm_cluster }}"
+      name: "{{ inventory_hostname_short }}"
+      validate_certs: no
+      networks:
+      - name: Lab Net
+        ip: "{{ provision_ipaddress }}"
+        netmask: 255.255.255.0
+        gateway: 10.72.212.254
+        domain: my_domain
+        dns_servers:
+        - 10.72.136.53
+        - 10.72.136.4
+        # dhcp is default so this must be specified
+        type: static
+       #- vlan:
+        device_type: vmxnet3
+      - name: Production Edit IEP
+        ip: "{{ ipaddress2 }}"
+        netmask: 255.255.255.0
+        # dhcp is default so this must be specified
+        type: static
+       #- vlan:
+        device_type: vmxnet3
+      - name: TS RVP IEP Tier0 Replication
+        ip: "{{ ipaddress3 }}"
+        netmask: 255.255.255.0
+        # dhcp is default so this must be specified
+        type: static
+       #- vlan:
+        device_type: vmxnet3
+      - name: iSCSI Path 1 Direct Connect
+        ip: "{{ ipaddress4 }}"
+        netmask: 255.255.255.0
+        # dhcp is default so this must be specified
+        type: static
+       #- vlan:
+        device_type: vmxnet3
+      - name: iSCSI Path 2 Direct Connect
+        ip: "{{ ipaddress5 }}"
+        netmask: 255.255.255.0
+        # dhcp is default so this must be specified
+        type: static
+       #- vlan:
+        device_type: vmxnet3
+      wait_for_ip_address: no
+    delegate_to: localhost
+
+  - name: Add Additioanl NIC Settings to Shelf Servers
+    blockinfile:
+      path: /etc/network/interfaces
+      insertafter: EOF
+      block: |
+       # The Production Edit IEP network interface
+       auto ens192
+       iface ens192 inet static
+        address 10.72.112.111
+        netmask 255.255.255.0
+        network 10.72.112.0
+        broadcast 10.72.112.255
+
+       # The TS RVP Tier0 Replication network interface
+       auto ens224
+       iface ens224 inet static
+        address 10.72.108.101
+        netmask 255.255.255.0
+        network 10.72.108.0
+        broadcast 10.72.108.255
+
+       # The iSCSI Path 1 network interface
+       auto ens256
+       iface ens256 inet static
+        address 10.72.112.111
+        netmask 255.255.255.0
+
+       # The iSCSI Path 2 network interface
+       auto ens161
+       iface ens161 inet static
+        address 10.72.113.111
+        netmask 255.255.255.0
+

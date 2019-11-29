@@ -1,0 +1,372 @@
+---
+# vim: set ft=ansible et ts=2 sw=2:
+#
+# Create a new VM from a template using the new vmware_guest module
+- name: Create IEP Shelf VMs from scratch
+  hosts: cache
+  gather_facts: no
+  become: yes
+  become_method: sudo
+  vars:
+    iso_image: "{{ inventory_hostname_short }}.iso"
+    iso_path: "ISOs/ansible"
+    iso_root_path: "/home/ere-mid-tf/projects/boot-cd"
+    ansible_host: "{{ provision_ipaddress }}"
+    ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    notes: Created by Tim Fry
+    dumpfacts: False
+
+  tasks:
+  - name: Import Vars
+    include_vars: ~/projects/project_1/iep/group_vars/all
+
+#      - name: Check for required variables
+#        fail: msg="Must pass name and group to -e"
+#        when: name is not defined or group is not defined
+
+#      - name: Check for vSphere access parameters
+#        fail: msg="Must set vcenter_user and vcenter_pass in a Vault"
+#        when: (vcenter_user is not defined) or (vcenter_pass is not defined)
+
+  - name: Create working directory
+    delegate_to: localhost
+    tempfile:
+     state: directory
+    register: tempdir
+
+  - name: Get CD contents from git
+    delegate_to: localhost
+    git:
+     repo: "{{ iso_root_path }}"
+     dest: "{{ tempdir.path }}"
+     depth: 1
+
+  - name: Download preseed and script
+    delegate_to: localhost
+    get_url:
+      url: "{{ item.url }}"
+      dest: "{{ item.dest }}"
+    with_items:
+      - { url: "http://watford1.ext.jupiter.bbc.co.uk/pxe/1604_reith.cfg", dest: "{{ tempdir.path }}/cd-root/linux/preseed.cfg" }
+      - { url: "http://watford1.ext.jupiter.bbc.co.uk/pxe/1604.sh", dest: "{{ tempdir.path }}/cd-root/linux/1604.sh" }
+
+  - name: Remove partition information from preseed
+    delegate_to: localhost
+    replace:
+      path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+      regexp: "{{ item }}"
+    with_items:
+      - "^d-i partman-auto/expert_recipe[\\S\\s]*?\\.$"
+      - "^d-i partman-basicfilesystems/no_swap boolean false$"
+      - "^d-i partman-auto/choose_recipe select myroot$"
+
+  - name: Edit preseed file
+    delegate_to: localhost
+    lineinfile:
+      path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+      line: "{{ item }}"
+    with_items:
+       - "tasksel tasksel/first multiselect standard"
+       - "keyboard-configuration console-setup/ask_detect boolean false"
+       - "pkgsel pkgsel/language-pack-patterns string"
+       - "pkgsel pkgsel/install-language-support boolean false"
+       - "d-i debian-installer/locale string en_GB"
+       - "d-i keyboard-configuration/layoutcode string gb"
+       - "d-i netcfg/disable_autoconfig boolean true"
+       - "d-i netcfg/hostname string {{ inventory_hostname_short }}"
+       - "d-i netcfg/get_hostname string {{ inventory_hostname_short }}"
+       - "d-i netcfg/get_domain string {{ provision_domain }}"
+       - "d-i netcfg/get_ipaddress string {{ provision_ipaddress }}"
+       - "d-i netcfg/get_netmask string {{ provision_netmask }}"
+       - "d-i netcfg/get_gateway string {{ provision_gateway }}"
+       - "d-i netcfg/get_nameservers string {{ provision_nameservers }}"
+       - "bbcnpf-joindomain bbcnpf-joindomain/domain select National"
+       - "bbcnpf-joindomain bbcnpf-joindomain/group select BSC - English Regions"
+       - "bbcnpf-defaultserver bbcnpf/defaultserverconfig note"
+       - "bbcnpf-defaultserver bbcnpf/select-banner select None"
+       - "bbcnpf-defaultserver bbcnpf/select-ps1-text string"
+       - "bbcnpf-defaultserver bbcnpf/snmpdlocation string {{ provision_snmpdlocation }}"
+       - "bbcnpf-defaultserver bbcnpf/snmpdcommunity string support"
+       - "bbcnpf-defaultserver bbcnpf/snmpdname string BSC <bsc@bbc.co.uk>"
+       - "grub-installer grub-installer/choose_bootdev string /dev/sda"
+       - "finish-install finish-install/reboot_in_progress note"
+       - "partman-auto partman-auto/disk string /dev/sda"
+       - "partman-auto partman-auto/method string regular"
+       - "d-i partman-partitioning/confirm_write_new_label boolean true"
+       - "d-i partman/choose_partition select finish"
+       - "d-i partman/confirm boolean true"
+       - "d-i partman/confirm_nooverwrite boolean true"
+       - "partman-auto partman-auto/choose_recipe select atomic"
+
+  - name: Add open-vm-tools to list of packages
+    delegate_to: localhost
+    lineinfile:
+      path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+      regexp: '(^d-i pkgsel/include string(\s+(?!open-vm-tools)[\w=/\-\.]+)*)\s*$'
+      line: '\1 open-vm-tools'
+      backrefs: true
+
+  - name: Insert preseed into initrd
+    delegate_to: localhost
+    shell: "{{ item }}"
+    args:
+      chdir: "{{ tempdir.path }}/cd-root/linux/"
+    with_items:
+      - gunzip initrd.gz
+      - echo "preseed.cfg" | cpio -o -H newc -A -F initrd
+      - echo "1604.sh" | cpio -o -H newc -A -F initrd
+      - gzip initrd
+  
+  - name: Create ISO file
+    delegate_to: localhost
+    command: xorriso -as mkisofs -V '{{ inventory_hostname_short }}' -isohybrid-mbr --interval:local_fs:0s-15s:zero_mbrpt:'{{ tempdir.path }}/mini.iso' -partition_cyl_align all -partition_offset 0 -partition_hd_cyl 64 -partition_sec_hd 32 -append_partition 2 0x1 --interval:local_fs:108544d-120831d::'{{ tempdir.path }}/mini.iso' -c isolinux/boot.cat -b isolinux/isolinux.bin -no-emul-boot -boot-load-size 4 -boot-info-table -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -boot-load-size 4672 -o {{ tempdir.path }}/{{ iso_image }} {{ tempdir.path }}/cd-root
+  
+  - name: Upload ISO file
+    delegate_to: localhost
+    vsphere_copy:
+      host: "{{ provision_vm_vcenter_hostname }}"
+      login: "{{ ansible_user }}@national"
+      password: "{{ ansible_password }}"
+      src: "{{ tempdir.path }}/{{ iso_image }}"
+      datacenter: "{{ provision_vm_esxi_datacenter }}"
+      datastore: "{{ iso_datastore }}"
+      path: "{{ iso_path }}/{{ iso_image }}"
+      validate_certs: no
+    register: command_result
+  
+  - debug:
+     msg: "{{ command_result }}"
+  
+  - name: fail the play if the previous command did not succeed
+    fail:
+      msg: "the command failed"
+    when: "'The write operation timed out' in command_result"
+  
+  - name: Remove working directory
+    delegate_to: localhost
+    file:
+      path: "{{ tempdir.path }}"
+      state: absent
+
+    # Create a new VM on an ESX server
+    # Returns changed = False when the VM already exists
+    # Returns changed = True and a adds ansible_facts from the new VM
+    # State will set the power status of a guest upon creation. Use powered_on to create and boot.
+    # Options ['state', 'vm_extra_config', 'vm_disk', 'vm_nic', 'vm_hardware', 'esxi'] are required together
+    # Note: vm_floppy support added in 2.0
+
+  - name: Create a virtual machine on given ESXi hostname
+    vmware_guest:
+      hostname: "{{ provision_vm_vcenter_hostname }}"
+      username: "{{ ansible_user }}@national"
+      password: "{{ ansible_password }}"
+      validate_certs: no
+      #cluster and esxi are mutually exclusive parameters
+      #cluster: "{{ cluster }}"
+      esxi_hostname: "{{ provision_vm_esxi_hostname }}"
+      datacenter: "{{ provision_vm_esxi_datacenter }}"
+      # folder: "{{ provision_vm_esxi_datacenter }}/{{ inventory_hostname_short }}"
+      folder: "/{{ provision_vm_esxi_datacenter }}/vm"
+      name: "{{ inventory_hostname_short }}"
+      state: poweredon
+      guest_id: ubuntu64Guest
+      # This is hostname of particular ESXi server on which user wants VM to be deployed
+      esxi_hostname: "{{ provision_vm_esxi_hostname }}"
+      annotation: IEP Cache
+      disk:
+      - size_gb: 60
+        type: eagerzeroedthick
+        datastore: "{{ provision_vm_datastore }}"
+      - size_gb: 20
+        type: eagerzeroedthick
+        datastore: "{{ provision_vm_datastore }}"
+      networks:
+      - name: Lab Net
+        ip: "{{ provision_ipaddress }}"
+        netmask: 255.255.255.0
+        gateway: 10.72.212.254
+        domain: my_domain
+        dns_servers:
+        - 10.72.136.53
+        - 10.72.136.4
+        # dhcp is default so this must be specified
+        type: static
+       #- vlan:
+        device_type: vmxnet3
+#      - name: Production Edit IEP
+#        ip: "{{ ipaddress2 }}"
+#        netmask: 255.255.255.0
+#        # dhcp is default so this must be specified
+#        type: static
+#       #- vlan:
+#        device_type: vmxnet3
+#      - name: TS RVP IEP Cache Replication
+#        ip: "{{ ipaddress3 }}"
+#        netmask: 255.255.255.0
+#        # dhcp is default so this must be specified
+#        type: static
+#       #- vlan:
+#        device_type: vmxnet3
+      wait_for_ip_address: no
+#      - name: TS IEP Production Edit Network
+#        ip: "{{ ipaddress2 }}"
+#        netmask: 255.255.255.0
+#        # dhcp is default so this must be specified
+#        type: static
+#       #- vlan:
+#        device_type: vmxnet3
+      hardware:
+       memory_mb: 65536
+       num_cpus: 8
+       scsi: paravirtual
+      cdrom:
+       type: iso
+       iso_path: "[{{ iso_datastore }}]/ISOs/ansible/{{ inventory_hostname_short }}.iso"
+    delegate_to: localhost
+    register: deploy_vm
+
+  - name: Waiting for install to complete
+    delegate_to: localhost
+    wait_for:
+      host: "{{ provision_ipaddress }}"
+      port: 22
+      state: started
+      timeout: 1800
+      delay: 180
+
+#  - name: Create Disk 1 for ZFS SLOG 
+#    vmware_guest:
+#      hostname: "{{ provision_vm_vcenter_hostname }}"
+#      username: "{{ ansible_user }}@national"
+#      password: "{{ ansible_password }}"
+#      datacenter: "{{ provision_vm_esxi_datacenter }}"
+#      cluster: "{{ provision_vm_cluster }}"
+#      name: "{{ inventory_hostname_short }}"
+#      validate_certs: no
+#      disk:
+#      - size_gb: 60
+#        type: eagerzeroedthick
+#        datastore: "{{ provision_vm_datastore }}"
+#      - size_gb: 20
+#        type: eagerzeroedthick
+#        datastore: "{{ provision_vm_datastore }}"
+#      - size_gb: 111
+#        type: eagerzeroedthick
+#        datastore: "{{ provision_vm_datastore2 }}"
+#    delegate_to: localhost
+
+#  - name: Add Disk 2 for ZFS SLOG
+#    vmware_guest:
+#      hostname: "{{ provision_vm_vcenter_hostname }}"
+#      username: "{{ ansible_user }}@national"
+#      password: "{{ ansible_password }}"
+#      validate_certs: no
+#      #cluster and esxi are mutually exclusive parameters
+#      cluster: "{{ provision_vm_cluster }}"
+#      # esxi_hostname: "{{ provision_vm_esxi_hostname }}"
+#      datacenter: "{{ provision_vm_esxi_datacenter }}"
+#      # folder: "{{ provision_vm_esxi_datacenter }}/{{ inventory_hostname_short }}"
+#      #folder: "/{{ provision_vm_esxi_datacenter }}/vm"
+#      name: "{{ inventory_hostname_short }}"
+#      #state: poweredon
+#      #guest_id: ubuntu64Guest
+#      # This is hostname of particular ESXi server on which user wants VM to be deployed
+#      # esxi_hostname: "{{ provision_vm_esxi_hostname }}"
+#      # annotation: IEP Shelf
+#      disk:
+#      - size_gb: 111
+#        type: eagerzeroedthick
+#        datastore: "{{ provision_vm_datastore3 }}"
+#      networks:
+#      delegate_to: localhost
+
+  - name: add proxy to sudoers
+    lineinfile:
+      path: /etc/sudoers
+      line: 'Defaults   env_keep="http_proxy https_proxy ftp_proxy no_proxy"'
+      insertafter: '^Defaults\s+env_reset'
+
+  - name: Install aptitude
+    apt:
+      name: aptitude
+      state: present
+
+  - name: Install ZFS
+    apt:
+     name:
+     - zfsutils-linux
+     environment:
+      http_proxy: "{{proxy_env}}"
+
+  - name: Install NFS
+    apt:
+     name:
+     - nfs-kernel-server
+     environment:
+      http_proxy: "{{proxy_env}}"
+
+  - name: Copy the Buildnorth sources list to the new VM
+    copy:
+      src: "{{ playbook_dir }}/resources/sources.list"
+      dest: /etc/apt/sources.list
+      owner: root
+      group: root
+      mode: 0755
+
+  - name: hack to resolve Problem with MergeList Issue
+    sudo: true
+    shell: 'find /var/lib/apt/lists -maxdepth 1 -type f -exec rm -v {} \;'
+
+  - name: Update APT Cache
+    sudo: true
+    shell: 'apt-get update'
+
+  - name: Add Admin Group
+    group:
+      name: admin
+      state: present
+      system: yes
+
+  - name: Add BSC Admin User
+    user:
+      name: bscadmin
+      password: "{{ bscadmin_password }}"
+      comment: "BSC Admin  User"
+      shell: /bin/bash
+      group: admin
+      state: present
+
+  - name: Add ZFS repl user for cache datastore
+    user:
+      name: repl-cache
+      password: "{{ zfsrepl_password }}"
+      comment: "ZFS Replication User"
+      shell: /bin/bash
+      group: admin
+      state: present
+
+  - name: Allow ZFS repl user passwordless sudo
+    lineinfile:
+      dest: /etc/sudoers
+      state: present
+      regexp: '^%repl-cache'
+      line: '%repl-cache ALL=(ALL) NOPASSWD: ALL'
+      validate: 'visudo -cf %s'
+
+  - name: create an empty dns-register file in cron.hourly
+    file:
+      path: "/etc/cron.hourly/dns-register"
+      mode: "u=rwx,g=rx,o=rw"
+      state: touch
+
+  - name: Add bin sh to dns register file with lineinfile to avoid comments at start of file
+    lineinfile:
+      path: "/etc/cron.hourly/dns-register"
+      line: '#!/bin/sh'
+
+  - name: Register host and floating IP in DNS
+    blockinfile:
+      path: /etc/cron.hourly/dns-register
+      insertafter: EOF
+      block: |
+        /bin/echo -e "update add $(/bin/hostname).$(/bin/hostname -d) 3600 A $(/sbin/ifconfig|/bin/grep inet|/usr/bin/head -1|/bin/sed 's/\:/ /'|/usr/bin/awk '{print $3}')\nsend\n" | /usr/bin/nsupdate -v

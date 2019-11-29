@@ -1,0 +1,37 @@
+Dim env
+
+Set env = CreateObject("Microsoft.SMS.TSEnvironment")
+env("OSDComputerName") = "{{ hostname }}"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("Role") = "{{ role }}"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("Contact_Name") = "{{ snmp_contact }}"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("Location") = "{{ snmp_location }}"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("Asset") = "{{ asset }}"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("SRV_Description") = "{{ description }}"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("Build_Engineer") = "{{ build_engineer }}"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("CR_reference") = "{{ cr_ref }}"
+ 
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("SAN_Attached") = "0"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("data_disk") = "1"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("Baseline") = "2"
+
+set env = CreateObject("Microsoft.SMS.TSEnvironment") 
+env("ATOSupport") = "BBC-Self_Provide"

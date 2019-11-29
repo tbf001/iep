@@ -1,0 +1,264 @@
+---
+   - name: Create directory
+     file:
+      path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}
+      state: directory
+    
+   - name: Create Config.vbs
+     win_template:
+      src: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/templates/Config.vbs.j2
+      dest: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/Config.vbs
+
+   - name: Create NetConfig.ps1
+     win_template:
+      src: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/templates/NetConf.ps1.j2
+      dest: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/NetConf.ps1
+
+   - name: Create unattend.xml
+     win_template:
+      src: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/templates/unattend.xml.j2
+      dest: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/unattend.xml
+
+   - set_fact:
+       install_sophos_2: "{{ install_sophos }}"
+   
+   - lineinfile:
+       path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/Config.vbs
+       line: '#'
+     when: install_sophos_2
+
+   - lineinfile:
+       path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/Config.vbs
+       regexp: '#'
+       line: 'Set env = CreateObject("Microsoft.SMS.TSEnvironment")'
+     when: install_sophos_2
+
+   - lineinfile:
+       path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/Config.vbs
+       line: 'env("Applications001") = "{de053e1a-712c-4d5c-abcf-f884c9903ae9}"'
+     when: install_sophos_2
+
+   - name: permissions config.vbs
+     become: yes
+     become_method: sudo
+     file:
+       path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/Config.vbs
+       mode: 0777
+
+   - name: permissions netconfig.ps1
+     become: yes
+     become_method: sudo
+     file:
+       path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/NetConf.ps1
+       mode: 0777
+
+   - name: permissions unattend.xml
+     become: yes
+     become_method: sudo
+     file:
+       path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/unattend.xml
+       mode: 0777
+
+   - name: Create mountpoint
+     file:
+      path: /media/floppy0/
+      state: directory
+
+   - name: Create .img file   
+     become: yes
+     become_method: sudo
+     command: /sbin/mkfs.fat -C /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/{{ hostname }}.img 1440
+
+   - name: permissions flop
+     become: yes
+     become_method: sudo
+     file:
+       path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/{{ hostname }}.img
+       mode: 0777
+
+   - name: Mount flop
+     become: yes
+     become_method: sudo
+     command: mount -o loop -t msdos /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/{{ hostname }}.img /media/floppy0/
+
+   - name: Config.vbs trasnfer
+     become: yes
+     become_method: sudo
+     command: cp -P /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/Config.vbs /media/floppy0/
+
+   - name: NetConfig.ps1 transfer
+     become: yes
+     become_method: sudo
+     command: cp -P /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/NetConf.ps1 /media/floppy0/
+
+   - name: unattend.xml transfer
+     become: yes
+     become_method: sudo
+     command: cp -P /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/unattend.xml /media/floppy0/
+
+   - name: unmount flop
+     become: yes
+     become_method: sudo
+     command: umount /media/floppy0/
+
+   - name: Upload .img file
+     vsphere_copy:
+       host: "{{ vm_vcenter_host }}"
+       login: "{{ ere_user }}@national"
+       password: "{{ ere_pass }}"
+       src: "/home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/{{ hostname }}.img"
+       datacenter: "{{ vm_esxi_datacenter }}"
+       datastore: "{{ ISO_datastore }}"
+       path: "{{ ISO_path }}{{ hostname }}.img"
+       validate_certs: no
+
+   - name: Flush DNS Entry
+     become: yes
+     become_method: sudo
+     command: /bin/echo -e "update delete {{ hostname }}.national.core.bbc.co.uk 3600 A {{ ip1 }}\nsend\n" | /usr/bin/nsupdate -v
+
+   - name: Creat biosEdit
+     win_template:
+      src: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/templates/biosEdit.py.j2
+      dest: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/biosEdit.py
+
+   - name: Create delFileDS
+     win_template:
+      src: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/templates/delFileDS.py.j2
+      dest: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/delFileDS.py
+
+   - set_fact:
+       two_HDDs_2: "{{ two_HDDs }}"
+
+   - name: Create VM with two HDD
+     vsphere_guest:
+       vcenter_hostname: "{{ vm_vcenter_host }}"
+       validate_certs: no
+       username: "{{ ere_user }}@national"
+       password: "{{ ere_pass }}"
+       guest: "{{ hostname }}"
+       state: powered_off
+       cluster: "{{ vm_cluster }}"
+       esxi:
+         datacenter: "{{ vm_esxi_datacenter }}"
+         hostname: "{{ vm_esxi_hostname }}"   
+       vm_disk:
+         disk1:
+           size_gb: "{{ vm_hdd1 }}"
+           type: thick
+           datastore: "{{ vm_hdd1_datastore }}"
+         disk2:
+           size_gb: "{{ vm_hdd2 }}"
+           type: thick
+           datastore: "{{ vm_hdd2_datastore }}"
+       vm_extra_config:
+         notes: "{{ vm_notes }}"
+       vm_nic:
+         nic1:
+           type: vmxnet3
+           network: "{{ vm_network1 }}"
+           network_type: standard
+       vm_hardware:
+         memory_mb: "{{ vm_memory }}"
+         num_cpus: "{{ vm_cpus }}"
+         osid: "{{ vm_osid }}"
+         scsi: lsi_sas
+         vm_cdrom:
+           type: "iso"
+           iso_path: "{{ ISO_datastore }}/{{ ISO_path }}{{ ISO_name }}"
+         vm_floppy:
+           type: "image"
+           image_path: "{{ ISO_datastore }}/{{ ISO_path }}{{ hostname }}.img"
+     when: two_HDDs_2
+
+
+   - name: Create VM one HDD
+     vsphere_guest:
+       vcenter_hostname: "{{ vm_vcenter_host }}"
+       validate_certs: no
+       username: "{{ ere_user }}@national"
+       password: "{{ ere_pass }}"
+       guest: "{{ hostname }}"
+       state: powered_off
+       cluster: "{{ vm_cluster }}"
+       esxi:
+         datacenter: "{{ vm_esxi_datacenter }}"
+         hostname: "{{ vm_esxi_hostname }}"
+       vm_disk:
+         disk1:
+           size_gb: "{{ vm_hdd1 }}"
+           type: thick
+           datastore: "{{ vm_hdd1_datastore }}"
+       vm_extra_config:
+         notes: "{{ vm_notes }}"
+       vm_nic:
+         nic1:
+           type: vmxnet3
+           network: "{{ vm_network1 }}"
+           network_type: standard
+       vm_hardware:
+         memory_mb: "{{ vm_memory }}"
+         num_cpus: "{{ vm_cpus }}"
+         osid: "{{ vm_osid }}"
+         scsi: lsi_sas
+         vm_cdrom:
+           type: "iso"
+           iso_path: "{{ ISO_datastore }}/{{ ISO_path }}{{ ISO_name }}"
+         vm_floppy:
+           type: "image"
+           image_path: "{{ ISO_datastore }}/{{ ISO_path }}{{ hostname }}.img"
+     when: not two_HDDs_2
+
+   - name: pause to ensure VM creation is finished
+     wait_for: timeout=10
+     delegate_to: localhost
+
+
+   - name: Change boot order and boot machine
+     command: python /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/biosEdit.py /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/templates/
+
+   - name: ADVANCE ONLY WHEN INSTALLATION IS COMPLETE
+     wait_for:
+       host: "{{ hostname }}.NATIONAL.CORE.BBC.CO.UK"
+       port: 5985
+       state: started
+       timeout: 3600
+     delegate_to: localhost
+
+#   - name: pause to ensure reboot process finishes
+#     wait_for: timeout=60
+#     delegate_to: localhost
+       
+#   - name: Shutdown VM
+#     vsphere_guest:
+#       vcenter_hostname: "{{ vm_vcenter_host }}"
+#       validate_certs: no
+#       username: "{{ ere_user }}@national"
+#       password: "{{ ere_pass }}"
+#       guest: "{{ hostname }}"
+#       state: powered_off
+
+#   - name: Delete img file from Datastore
+#     command: python /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/delFileDS.py /home/ere-mid-rt/projects/WinInstall/templates/
+
+#   - name: Delete temp file paths
+#     file:
+#      state: absent
+#      path: /home//ere-mid-tf/projects/project_1/iep/roles/WinInstall/img_files/{{ hostname }}/
+
+#   - name: boot VM
+#     vsphere_guest:
+#       vcenter_hostname: "{{ vm_vcenter_host }}"
+#       validate_certs: no
+#       username: "{{ ere_user }}@national"
+#       password: "{{ ere_pass }}"
+#       guest: "{{ hostname }}"
+#       state: powered_on
+
+#   - name: wait till WinRM is listening
+#     wait_for:
+#       host: "{{ hostname }}.NATIONAL.CORE.BBC.CO.UK"
+#       port: 5985
+#       state: started
+#       timeout: 600
+#     delegate_to: localhost

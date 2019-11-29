@@ -1,0 +1,377 @@
+---
+- name: Create Cluster Control Hosts from scratch
+  hosts: shelf
+  gather_facts: no
+  become: yes
+  become_method: sudo
+  vars:
+    iso_image: "{{ inventory_hostname_short }}.iso"
+    iso_path: "ISOs/ansible"
+    iso_root_path: "/home/ere-mid-tf/projects/boot-cd"
+    ansible_host: "{{ provision_ipaddress }}"
+    ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+  tasks:
+  - name: Import Vars
+    include_vars: ~/projects/project_1/iep/group_vars/all
+
+  - name: Create working directory
+    delegate_to: localhost
+    tempfile:
+      state: directory
+    register: tempdir
+
+  - name: Get CD contents from git
+    delegate_to: localhost
+    git:
+      repo: "{{ iso_root_path }}"
+      dest: "{{ tempdir.path }}"
+      depth: 1
+
+  - name: Download preseed and script
+    delegate_to: localhost
+    get_url:
+      url: "{{ item.url }}"
+      dest: "{{ item.dest }}"
+    with_items:
+      - { url: "http://watford1.ext.jupiter.bbc.co.uk/pxe/1604_reith.cfg", dest: "{{ tempdir.path }}/cd-root/linux/preseed.cfg" }
+      - { url: "http://watford1.ext.jupiter.bbc.co.uk/pxe/1604.sh", dest: "{{ tempdir.path }}/cd-root/linux/1604.sh" }
+
+  - name: Remove partition information from preseed
+    delegate_to: localhost
+    replace:
+      path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+      regexp: "{{ item }}"
+    with_items:
+      - "^d-i partman-auto/expert_recipe[\\S\\s]*?\\.$"
+      - "^d-i partman-basicfilesystems/no_swap boolean false$"
+      - "^d-i partman-auto/choose_recipe select myroot$"
+
+  - name: Edit preseed file
+    delegate_to: localhost
+    lineinfile:
+      path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+      line: "{{ item }}"
+    with_items:
+      - "tasksel tasksel/first multiselect standard"
+      - "keyboard-configuration console-setup/ask_detect boolean false"
+      - "pkgsel pkgsel/language-pack-patterns string"
+      - "pkgsel pkgsel/install-language-support boolean false"
+      - "d-i debian-installer/locale string en_GB"
+      - "d-i keyboard-configuration/layoutcode string gb"
+      - "d-i netcfg/disable_autoconfig boolean true"
+      - "d-i netcfg/hostname string {{ inventory_hostname_short }}"
+      - "d-i netcfg/get_hostname string {{ inventory_hostname_short }}"
+      - "d-i netcfg/get_domain string {{ provision_domain }}"
+      - "d-i netcfg/get_ipaddress string {{ provision_ipaddress }}"
+      - "d-i netcfg/get_netmask string {{ provision_netmask }}"
+      - "d-i netcfg/get_gateway string {{ provision_gateway }}"
+      - "d-i netcfg/get_nameservers string {{ provision_nameservers }}"
+      - "bbcnpf-joindomain bbcnpf-joindomain/domain select National"
+      - "bbcnpf-joindomain bbcnpf-joindomain/group select BSC - English Regions"
+      - "bbcnpf-defaultserver bbcnpf/defaultserverconfig note"
+      - "bbcnpf-defaultserver bbcnpf/select-banner select None"
+      - "bbcnpf-defaultserver bbcnpf/select-ps1-text string"
+      - "bbcnpf-defaultserver bbcnpf/snmpdlocation string {{ provision_snmpdlocation }}"
+      - "bbcnpf-defaultserver bbcnpf/snmpdcommunity string support"
+      - "bbcnpf-defaultserver bbcnpf/snmpdname string BSC <bsc@bbc.co.uk>"
+      - "grub-installer grub-installer/choose_bootdev string /dev/sda"
+      - "finish-install finish-install/reboot_in_progress note"
+      - "partman-auto partman-auto/disk string /dev/sda"
+      - "partman-auto partman-auto/method string regular"
+      - "d-i partman-partitioning/confirm_write_new_label boolean true"
+      - "d-i partman/choose_partition select finish"
+      - "d-i partman/confirm boolean true"
+      - "d-i partman/confirm_nooverwrite boolean true"
+      - "partman-auto partman-auto/choose_recipe select atomic"
+
+  - name: Add open-vm-tools to list of packages
+    delegate_to: localhost
+    lineinfile:
+      path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+      regexp: '(^d-i pkgsel/include string(\s+(?!open-vm-tools)[\w=/\-\.]+)*)\s*$'
+      line: '\1 open-vm-tools'
+      backrefs: true
+
+#  - name: Customise CD menus
+#    delegate_to: localhost
+#    template:
+#      src: "{{ item.src }}"
+#      dest: "{{ item.dest }}"
+#    with_items:
+#      - { src: "{{ tempdir.path }}/cd-root/isolinux/menu.cfg", dest: "{{ tempdir.path }}/cd-root/isolinux/menu.cfg" }
+#      - { src: "{{ tempdir.path }}/cd-root/boot/grub/grub.cfg", dest: "{{ tempdir.path }}/cd-root/boot/grub/grub.cfg" }
+
+  - name: Insert preseed into initrd
+    delegate_to: localhost
+    shell: "{{ item }}"
+    args:
+      chdir: "{{ tempdir.path }}/cd-root/linux/"
+    with_items:
+      - gunzip initrd.gz
+      - echo "preseed.cfg" | cpio -o -H newc -A -F initrd
+      - echo "1604.sh" | cpio -o -H newc -A -F initrd
+      - gzip initrd
+
+  - name: Create ISO file
+    delegate_to: localhost
+    command: xorriso -as mkisofs -V '{{ inventory_hostname_short }}' -isohybrid-mbr --interval:local_fs:0s-15s:zero_mbrpt:'{{ tempdir.path }}/mini.iso' -partition_cyl_align all -partition_offset 0 -partition_hd_cyl 64 -partition_sec_hd 32 -append_partition 2 0x1 --interval:local_fs:108544d-120831d::'{{ tempdir.path }}/mini.iso' -c isolinux/boot.cat -b isolinux/isolinux.bin -no-emul-boot -boot-load-size 4 -boot-info-table -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -boot-load-size 4672 -o {{ tempdir.path }}/{{ iso_image }} {{ tempdir.path }}/cd-root
+
+  - name: Upload ISO file
+    delegate_to: localhost
+    vsphere_copy:
+      host: "{{ provision_vm_vcenter_hostname }}"
+      login: "{{ ansible_user }}@national"
+      password: "{{ ansible_password }}"
+      src: "{{ tempdir.path }}/{{ iso_image }}"
+      datacenter: "{{ provision_vm_esxi_datacenter }}"
+      datastore: "{{ iso_datastore }}"
+      path: "{{ iso_path }}/{{ iso_image }}"
+      validate_certs: no
+    register: command_result
+
+  - debug: 
+     msg: "{{ command_result }}"
+
+  - name: fail the play if the previous command did not succeed
+    fail:
+      msg: "the command failed"
+    when: "'The write operation timed out' in command_result"
+
+  - name: Remove working directory
+    delegate_to: localhost
+    file:
+      path: "{{ tempdir.path }}"
+      state: absent
+
+  - name: Create Virtual Machine
+    delegate_to: localhost
+    vsphere_guest:
+      vcenter_hostname: "{{ provision_vm_vcenter_hostname }}"
+      validate_certs: no
+      username: "{{ ansible_user }}@national"
+      password: "{{ ansible_password }}"
+      guest: "{{ inventory_hostname_short }}"
+      state: powered_on
+      cluster: "{{ provision_vm_cluster }}"
+      esxi:
+        datacenter: "{{ provision_vm_esxi_datacenter }}"
+        hostname: "{{ provision_vm_esxi_hostname }}"
+      vm_disk:
+        disk1:
+          size_gb: 60
+          type: zeroedthick
+          datastore: "{{ provision_vm_datastore }}"
+        disk2:
+          size_gb: 111
+          type: zeroedthick
+          datastore: "{{ provision_vm_datastore2 }}"
+        disk3:
+          size_gb: 111
+          type: zeroedthick
+          datastore: "{{ provision_vm_datastore3 }}"
+        disk4:
+          size_gb: 111
+          type: zeroedthick
+          datastore: "{{ provision_vm_datastore2 }}"
+        disk5:
+          size_gb: 111
+          type: zeroedthick
+          datastore: "{{ provision_vm_datastore3 }}"
+      vm_extra_config:
+        notes: IEP Shelf
+      vm_nic:
+        nic1:
+          type: vmxnet3
+          network: "{{ provision_vm_network }}"
+          network_type: standard
+      vm_hardware:
+        memory_mb: 65536
+        num_cpus: 8
+        osid: ubuntu64Guest
+        scsi: lsi
+        vm_cdrom:
+          type: "iso"
+          iso_path: "{{ iso_datastore }}/ISOs/ansible/{{ inventory_hostname_short }}.iso"
+
+  - name: Waiting for install to complete
+    delegate_to: localhost
+    wait_for:
+      host: "{{ provision_ipaddress }}"
+      port: 22
+      state: started
+      timeout: 1800
+      delay: 180
+
+  - name: add proxy to sudoers
+    lineinfile:
+      path: /etc/sudoers
+      line: 'Defaults   env_keep="http_proxy https_proxy ftp_proxy no_proxy"'
+      insertafter: '^Defaults\s+env_reset'
+
+  - name: Install aptitude
+    apt:
+      name: aptitude
+      state: present
+
+  - name: Copy the Buildnorth sources list to the new VM
+    copy:
+      src: "{{ playbook_dir }}/resources/sources.list"
+      dest: /etc/apt/sources.list
+      owner: root
+      group: root
+      mode: 0755
+
+#  - name: Download MariaDB 10.# key from Ubuntu keyserver
+#    shell: apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0xF1656F24C74CD1D8
+#    environment:
+#     http_proxy: "{{proxy_env}}"
+
+#  - name: Add an apt key by id for Maria DB 10.3 from keyserver
+#    apt_key:
+#      keyserver: keyserver.ubuntu.com
+#      id: 0xF1656F24C74CD1D8
+
+  - name: hack to resolve Problem with MergeList Issue
+    sudo: true
+    shell: 'find /var/lib/apt/lists -maxdepth 1 -type f -exec rm -v {} \;'
+
+  - name: Update APT Cache
+    sudo: true
+    shell: 'apt-get update'
+
+  - name: Add Admin Group
+    group:
+      name: admin
+      state: present
+      system: yes
+
+  - name: Add BSC Admin User
+    user:
+      name: bscadmin
+      password: "{{ bscadmin_password }}"
+      comment: "BSC Admin  User"
+      shell: /bin/bash
+      group: admin
+      state: present
+
+#  - name: Allow clustercontrol user to have passwordless sudo
+#    lineinfile:
+#      dest: /etc/sudoers
+#      state: present
+#      regexp: '^%clustercontrol'
+#      line: '%clustercontrol ALL=(ALL) NOPASSWD: ALL'
+#      validate: 'visudo -cf %s'
+
+#  - name: Create Partition for MySQL DB
+#    become: yes
+#    parted:
+#      device: /dev/sdb
+#      number: 1
+#      state: present
+
+#  - name: Install xfsprogs package
+#    become: yes
+#    become_method: sudo
+#    apt:
+#      update_cache: yes
+#      cache_valid_time: 300
+#      state: latest
+#      name: xfsprogs
+
+#  - name: Format MySQL Partition
+#    become: yes
+#    filesystem:
+#      fstype: xfs
+#      dev: /dev/sdb1
+
+#  - name: Mount MySQL partition
+#    become: yes
+#    mount:
+#      path: /var/lib/mysql
+#      src: /dev/sdb1
+#      fstype: xfs
+#      state: mounted
+
+  - name: create an empty dns-register file in cron.hourly
+    file:
+      path: "/etc/cron.hourly/dns-register"
+      mode: "u=rwx,g=rx,o=rw"
+      state: touch
+
+  - name: Add bin sh to dns register file with lineinfile to avoid comments at start of file
+    lineinfile:
+      path: "/etc/cron.hourly/dns-register"
+      line: '#!/bin/sh'
+
+  - name: Register host and floating IP in DNS
+    blockinfile:
+      path: /etc/cron.hourly/dns-register
+      insertafter: EOF
+      block: |
+        /bin/echo -e "update add $(/bin/hostname).$(/bin/hostname -d) 3600 A $(/sbin/ifconfig|/bin/grep inet|/usr/bin/head -1|/bin/sed 's/\:/ /'|/usr/bin/awk '{print $3}')\nsend\n" | /usr/bin/nsupdate -v
+
+#  - name: make ssh key directory if it doesnt exist
+#    file:
+#      path: "/home/clustercontrol/.ssh"
+#      owner: clustercontrol
+#      group: admin
+#      mode: 0700
+#      state: directory
+
+#  - name: create an empty authorized_keys file
+#    file:
+#      path: "/home/clustercontrol/.ssh/authorized_keys"
+#      owner: clustercontrol
+#      group: admin
+#      mode: 0644
+#      state: touch
+
+#  - name: populate the authorized_keys file
+#    blockinfile:
+#      path: /home/clustercontrol/.ssh/authorized_keys
+#      block: |
+#        {{ cc_active_authorized_keys }}
+#        {{ cc_standby_authorized_keys }}
+#    no_log: true
+
+#  - name: Modify default server profile cache to include no proxy settings for MariaDB and Percona repos
+#    lineinfile:
+#      dest: /etc/bbcnpf-defaultserver/profile.d/cache
+#      state: present
+#      regexp: 'export no_proxy=buildsouth.national.core.bbc.co.uk,10.161.145.45,127.0.0.1'
+#      line: 'export no_proxy=buildsouth.national.core.bbc.co.uk,10.161.145.45,127.0.0.1,buildnorth.national.core.bbc.co.uk,10.72.136.153,ftp.osuosl.org,repo.percona.com'
+
+#  - name: Add entries to point MariaDB and Percona url paths to Buildnorth 
+#    blockinfile:
+#      path: /etc/hosts
+#      insertafter: "10.72.136.208   3gbbmdbbds1003.national.core.bbc.co.uk  3gbbmdbbds1003"
+#      block: |
+#        10.72.136.153   ftp.osuosl.org
+#        10.72.136.153   repo.percona.com
+
+# Setup Mysql Active Server for database replication
+- name: Setup Mysql Replication on Active CC server
+  hosts: shelf
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Install Additional apps for iSCSI & ZFS
+    apt:
+     name:
+     - multipath-tools
+     - open-iscsi
+     - open-iscsi-utils
+     - zfsutils-linux
+     - lsscsi
+     - libiscsi-bin
+     - keepalived
+     - samba
+     - xfsprogs
+     state: present
+    environment:
+     http_proxy: "{{proxy_env}}"

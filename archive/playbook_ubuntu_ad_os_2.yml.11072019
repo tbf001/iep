@@ -1,0 +1,294 @@
+---
+- name: AD Integration for Ubuntu
+  hosts: 1stcache
+  gather_facts: yes
+  serial: 2
+  vars:
+    ansible_host: "{{ provision_ipaddress }}"
+    ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+  tasks:
+  - name: Disable BBCNPF Join Domain Cron Job
+    become: yes
+    become_method: sudo
+    replace:
+      path: /etc/cron.daily/bbcnpf-joindomain-usermanage-cron
+      regexp: '^/usr/bin/bbcnpf-joindomain-usermanage  >> /var/log/bbcnpf-joindomain.log 2>&1'
+      replace: '#/usr/bin/bbcnpf-joindomain-usermanage  >> /var/log/bbcnpf-joindomain.log 2>&1'
+    ignore_errors: true
+   
+  - name: Install required packages
+    become: yes
+    become_method: sudo
+    apt:
+      name: "{{ item }}"
+      update_cache: yes
+      cache_valid_time: 300
+      state: latest
+    with_items:
+      - samba
+      - sssd
+      - sssd-ad
+      - realmd
+      - policykit-1
+      - libpam-sss
+      - adcli
+      - libnss-sss
+      - sssd-tools
+      - packagekit
+      - python-pexpect
+
+  - name: Check if machine is bound with realm
+    become: yes
+    become_method: sudo
+    command: /bin/bash -c "realm list | grep sssd"
+    register: realmd_bound
+    changed_when: false
+    ignore_errors: true
+
+  - name: Join system to AD
+    become: yes
+    become_method: sudo
+    expect:
+      #command: /bin/bash -c "/usr/sbin/realm join --user={{ ansible_user }} NATIONAL.CORE.BBC.CO.UK"
+      command: /bin/bash -c "{{ ''.join(('/usr/sbin/realm join --user=', {{ ansible_user }}, ' NATIONAL.CORE.BBC.CO.UK')) }}"
+      responses:
+        Password for *: "{{ ansible_password }}"
+    when: realmd_bound is failed
+
+  - name: SSSD Configuration
+    become: yes
+    become_method: sudo
+    #blockinfile:
+      #path: /etc/sssd/sssd.conf
+      #block: |
+    copy:
+      dest: /etc/sssd/sssd.conf
+      content: |
+        [sssd]
+        domains = national.core.bbc.co.uk
+        config_file_version = 2
+        services = nss, pam
+
+        [domain/national.core.bbc.co.uk]
+        ;ad_domain = national.core.bbc.co.uk
+        ;krb5_realm = NATIONAL.CORE.BBC.CO.UK
+        realmd_tags = manages-system joined-with-adcli
+        ;cache_credentials = True
+        id_provider = ad
+        ;krb5_store_password_if_offline = True
+        default_shell = /bin/bash
+        ;ldap_id_mapping = True
+        ;use_fully_qualified_names = True
+        override_homedir = /home/%d/%u
+        ;fallback_homedir = /home/%u@%d
+        enumerate = False
+        ignore_group_members = True
+        access_provider = ad
+      #create: yes
+
+  - name: Set sssd.conf permissions
+    become: yes
+    become_method: sudo
+    file:
+      path: /etc/sssd/sssd.conf
+      owner: root
+      group: root
+      mode: 0600
+
+  - name: Add pam_mkhomedir.so to /etc/pam.d/common-session
+    become: yes
+    become_method: sudo
+    lineinfile:
+      path: "/etc/pam.d/common-session"
+      line: "session required        pam_mkhomedir.so skel=/etc/skel/ umask=0022"
+      insertafter: "# end of pam-auth-update config"
+  
+#  - name: Add pam_sss.so to /etc/pam.d/common-session
+#    become: yes
+#    become_method: sudo
+#    lineinfile:
+#      path: "/etc/pam.d/common-session"
+#      line: "session optional        pam_sss.so"
+#      insertafter: "session required        pam_mkhomedir.so skel=/etc/skel/ umask=0022"
+
+  #- name: Create parent home directory for domain users
+  #  become: yes
+  #  become_method: sudo
+  #  file:
+  #    path: /home/national.core.bbc.co.uk
+  #    state: directory
+  #    mode: 0755
+
+  - name: Restart SSSD
+    become: yes
+    become_method: sudo
+    service:
+      name: sssd
+      state: restarted
+
+  - name: Add domain users to sudoers file
+    become: yes
+    become_method: sudo
+    lineinfile:
+      path: "/etc/sudoers"
+      line: '%domain\ users ALL=(ALL) ALL'
+  
+  - name: Hold bbcnpf-defaultserver package
+    become: yes
+    become_method: sudo
+    dpkg_selections:
+      name: bbcnpf-defaultserver
+      selection: hold
+
+  - name: Remove bbcnpf-joindomain
+    become: yes
+    become_method: sudo
+    apt:
+      name: bbcnpf-joindomain
+      state: absent
+    ignore_errors: true
+
+  - name: Unhold bbcnpf-defaultserver package
+    become: yes
+    become_method: sudo
+    dpkg_selections:
+      name: bbcnpf-defaultserver
+      selection: install
+
+  - name: Backup existing Samba configuration
+    become: yes
+    become_method: sudo
+    shell: /bin/bash -c 'mv /etc/samba/smb.conf /etc/samba/smb.conf_backup_ansible'
+    args: 
+      creates: /etc/samba/smb.conf_backup_ansible
+
+  - name: Configure Samba
+    become: yes
+    become_method: sudo
+    copy:
+      dest: /etc/samba/smb.conf
+      content: |
+        [global]
+        workgroup = NATIONAL
+        realm = national.core.bbc.co.uk
+        client signing = yes
+        client use spnego = yes
+        kerberos method = secrets and keytab
+        security = ads
+        server string = %h server (Samba, Ubuntu)
+        dns proxy = no
+        log file = /var/log/samba/log.%m
+        max log size = 1000
+        syslog = 0
+        panic action = /usr/share/samba/panic-action %d
+        server role = standalone server
+        passdb backend = tdbsam
+        obey pam restrictions = yes
+        unix password sync = yes
+        passwd program = /usr/bin/passwd %u
+        passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
+        pam password change = yes
+        map to guest = bad user
+        usershare allow guests = yes
+        local master = no
+        preferred master = no
+        domain master = no
+        include = /etc/samba/bbcere.conf
+
+  - name: Set smb.conf permissions
+    become: yes
+    become_method: sudo
+    file:
+      path: /etc/samba/smb.conf
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: Create Samba configuration for local shares
+    become: yes
+    become_method: sudo
+    copy:
+      dest: /etc/samba/bbcere.conf
+      content: |
+        [test]
+        comment = Test Folder
+        path = /home
+        browsable = yes
+        read only = yes
+        guest ok = yes
+        valid users = @'31500::T-Manage All Servers@national.core.bbc.co.uk'
+
+  - name: Set bbcere.conf permissions
+    become: yes
+    become_method: sudo
+    file:
+      path: /etc/samba/bbcere.conf
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: Restart Samba processes
+    become: yes
+    become_method: sudo
+    service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+      - smbd
+      - nmbd
+
+  - name: Check if machine is bound with ads
+    become: yes
+    become_method: sudo
+    command: /bin/bash -c "net ads status -k | grep distinguishedName"
+    register: ads_bound
+    changed_when: false
+    ignore_errors: true
+
+  - name: Join system to AD for Samba
+    become: yes
+    become_method: sudo
+    command: /bin/bash -c "net ads join -k"
+    when: ads_bound is failed
+
+  - name: Restart Samba processes
+    become: yes
+    become_method: sudo
+    service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+      - smbd
+      - nmbd
+
+  - name: Change issue file
+    become: yes
+    become_method: sudo
+    lineinfile:
+      path: /etc/issue
+      regexp: '^Login available from NATIONAL'
+      line: 'Login available from NATIONAL'
+
+  - name: Change issue.net file
+    become: yes
+    become_method: sudo
+    lineinfile:
+      path: /etc/issue.net
+      regexp: '^Login available from NATIONAL'
+      line: 'Login available from NATIONAL'
+
+  - name: Check if old AD accounts exist locally
+    become: yes
+    become_method: sudo
+    command: /bin/bash -c 'grep "x:2000" /etc/passwd'
+    register: ad_local
+    changed_when: false
+    ignore_errors: true
+
+  - name: Remove accounts generated by bbcnpf-joindomain (keeps directories)
+    become: yes
+    become_method: sudo
+    shell: nohup /bin/bash -c 'pkill -u ere-mid-tf ; while IFS=":" read -r user x uid x; do [[ $uid -gt 1999 && $uid -lt 2500 ]] && userdel "$user"; done </etc/passwd ; groupdel domainusers'
+    ignore_errors: true
+    when: ad_local is succeeded

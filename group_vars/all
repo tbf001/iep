@@ -1,0 +1,18 @@
+---
+#nonsensitive data
+ansible_ssh_pipelining: yes
+ansible_python_interpreter: /usr/bin/python3
+mysql_replication_user_name: replication_user
+mysql_replication_master: 10.72.212.155
+mysql_replication_slave: 10.72.212.156
+iep_shelf__primary_ip: 10.72.127.101
+iep_shelf__floating_ip: 10.72.127.100
+iep_shelf_floating_dns: 3gbbmfsiep6000.national.core.bbc.co.uk
+iep_cache__primary_ip: 10.72.127.111
+iep_cache__floating_ip: 10.72.127.110
+iep_cache_floating_dns: 3gbbmfsiep6010.national.core.bbc.co.uk
+proxy_env: http://www-cache.reith.bbc.co.uk:80
+
+# sensitive data
+bscadmin_password: "{{ vault_bscadmin_password }}"
+zfsrepl_password: "{{ vault_zfsrepl_password }}"

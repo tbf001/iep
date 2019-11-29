@@ -1,0 +1,34 @@
+---
+provision_vm_cluster: BM Test & Staging
+provision_vm_esxi_datacenter: Birmingham
+provision_vm_vcenter_hostname: 3gbv1apvmw1001.national.core.bbc.co.uk
+provision_vm_notes: IEP Cache
+
+provision_vm_esxi_hostname: 3gbbmvhesx6011.national.core.bbc.co.uk
+provision_vm_datastore: TS S1 VM IEP
+provision_vm_mac_address:
+
+provision_vm_disk: 60
+provision_vm_disk2: 20
+
+provision_ipaddress: 10.72.212.157
+provision_netmask: 255.255.255.0
+provision_gateway: 10.72.212.254
+provision_vm_network: Lab Net
+
+ipaddress2: 10.72.127.111
+netmask2: 255.255.255.0
+gateway2: 10.72.127.254
+vm_network2: TS IEP Production Edit Network
+
+ipaddress3: 10.72.107.101
+netmask3: 255.255.255.0
+vm_network3: TS RVP IEP Cache Replication
+
+provision_nameservers: 10.72.136.53 10.72.136.4 10.120.8.2
+provision_domain: national.core.bbc.co.uk
+provision_snmpdlocation: BBC Birmingham, BSC Test and Staging Cluster
+
+iso_datastore: TS S1 DS BACKUP
+ansible_host: "{{ provision_ipaddress }}"
+ansible_python_interpreter: /usr/bin/python3

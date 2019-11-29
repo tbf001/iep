@@ -1,0 +1,209 @@
+---
+  # vim: set ft=ansible et ts=2 sw=2:
+  #
+  # Create a new VM from a template using the new vmware_guest module
+  - name: VM from template
+    hosts: shelf
+    gather_facts: false
+    become: yes
+    become_method: sudo
+    connection: local
+    vars:
+      iso_image: "{{ inventory_hostname_short }}.iso"
+      iso_path: "ISOs/ansible"
+      iso_root_path: "/home/ere-mid-tf/projects/boot-cd"
+      ansible_host: "{{ provision_ipaddress }}"
+      ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+      vcenter_hostname: "{{ provision_vm_vcenter_hostname }}"
+      esxhost: "{{ provision_vm_esxi_hostname }}"
+#      datastore: 
+#      network: "VMnetwork"
+      vmcluster: "{{ provision_vm_cluster }}"
+      notes: Created by Ansible
+      dumpfacts: False
+
+    tasks:
+    - name: Import Vars
+      include_vars: ~/projects/project_1/iep/group_vars/all
+
+#      - name: Check for required variables
+#        fail: msg="Must pass name and group to -e"
+#        when: name is not defined or group is not defined
+
+#      - name: Check for vSphere access parameters
+#        fail: msg="Must set vcenter_user and vcenter_pass in a Vault"
+#        when: (vcenter_user is not defined) or (vcenter_pass is not defined)
+
+    - name: Create working directory
+      delegate_to: localhost
+      tempfile:
+       state: directory
+      register: tempdir
+
+    - name: Get CD contents from git
+      delegate_to: localhost
+      git:
+       repo: "{{ iso_root_path }}"
+       dest: "{{ tempdir.path }}"
+       depth: 1
+
+    - name: Download preseed and script
+      delegate_to: localhost
+      get_url:
+        url: "{{ item.url }}"
+        dest: "{{ item.dest }}"
+      with_items:
+        - { url: "http://watford1.ext.jupiter.bbc.co.uk/pxe/1604_reith.cfg", dest: "{{ tempdir.path }}/cd-root/linux/preseed.cfg" }
+        - { url: "http://watford1.ext.jupiter.bbc.co.uk/pxe/1604.sh", dest: "{{ tempdir.path }}/cd-root/linux/1604.sh" }
+
+    - name: Remove partition information from preseed
+      delegate_to: localhost
+      replace:
+        path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+        regexp: "{{ item }}"
+      with_items:
+        - "^d-i partman-auto/expert_recipe[\\S\\s]*?\\.$"
+        - "^d-i partman-basicfilesystems/no_swap boolean false$"
+        - "^d-i partman-auto/choose_recipe select myroot$"
+
+    - name: Edit preseed file
+      delegate_to: localhost
+      lineinfile:
+        path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+        line: "{{ item }}"
+      with_items:
+         - "tasksel tasksel/first multiselect standard"
+         - "keyboard-configuration console-setup/ask_detect boolean false"
+         - "pkgsel pkgsel/language-pack-patterns string"
+         - "pkgsel pkgsel/install-language-support boolean false"
+         - "d-i debian-installer/locale string en_GB"
+         - "d-i keyboard-configuration/layoutcode string gb"
+         - "d-i netcfg/disable_autoconfig boolean true"
+         - "d-i netcfg/hostname string {{ inventory_hostname_short }}"
+         - "d-i netcfg/get_hostname string {{ inventory_hostname_short }}"
+         - "d-i netcfg/get_domain string {{ provision_domain }}"
+         - "d-i netcfg/get_ipaddress string {{ provision_ipaddress }}"
+         - "d-i netcfg/get_netmask string {{ provision_netmask }}"
+         - "d-i netcfg/get_gateway string {{ provision_gateway }}"
+         - "d-i netcfg/get_nameservers string {{ provision_nameservers }}"
+         - "bbcnpf-joindomain bbcnpf-joindomain/domain select National"
+         - "bbcnpf-joindomain bbcnpf-joindomain/group select BSC - English Regions"
+         - "bbcnpf-defaultserver bbcnpf/defaultserverconfig note"
+         - "bbcnpf-defaultserver bbcnpf/select-banner select None"
+         - "bbcnpf-defaultserver bbcnpf/select-ps1-text string"
+         - "bbcnpf-defaultserver bbcnpf/snmpdlocation string {{ provision_snmpdlocation }}"
+         - "bbcnpf-defaultserver bbcnpf/snmpdcommunity string support"
+         - "bbcnpf-defaultserver bbcnpf/snmpdname string BSC <bsc@bbc.co.uk>"
+         - "grub-installer grub-installer/choose_bootdev string /dev/sda"
+         - "finish-install finish-install/reboot_in_progress note"
+         - "partman-auto partman-auto/disk string /dev/sda"
+         - "partman-auto partman-auto/method string regular"
+         - "d-i partman-partitioning/confirm_write_new_label boolean true"
+         - "d-i partman/choose_partition select finish"
+         - "d-i partman/confirm boolean true"
+         - "d-i partman/confirm_nooverwrite boolean true"
+         - "partman-auto partman-auto/choose_recipe select atomic"
+
+    - name: Add open-vm-tools to list of packages
+      delegate_to: localhost
+      lineinfile:
+        path: "{{ tempdir.path }}/cd-root/linux/preseed.cfg"
+        regexp: '(^d-i pkgsel/include string(\s+(?!open-vm-tools)[\w=/\-\.]+)*)\s*$'
+        line: '\1 open-vm-tools'
+        backrefs: true
+
+    - name: Insert preseed into initrd
+      delegate_to: localhost
+      shell: "{{ item }}"
+      args:
+        chdir: "{{ tempdir.path }}/cd-root/linux/"
+      with_items:
+        - gunzip initrd.gz
+        - echo "preseed.cfg" | cpio -o -H newc -A -F initrd
+        - echo "1604.sh" | cpio -o -H newc -A -F initrd
+        - gzip initrd
+  
+    - name: Create ISO file
+      delegate_to: localhost
+      command: xorriso -as mkisofs -V '{{ inventory_hostname_short }}' -isohybrid-mbr --interval:local_fs:0s-15s:zero_mbrpt:'{{ tempdir.path }}/mini.iso' -partition_cyl_align all -partition_offset 0 -partition_hd_cyl 64 -partition_sec_hd $
+  
+    - name: Upload ISO file
+      delegate_to: localhost
+      vsphere_copy:
+        host: "{{ provision_vm_vcenter_hostname }}"
+        login: "{{ ansible_user }}@national"
+        password: "{{ ansible_password }}"
+        src: "{{ tempdir.path }}/{{ iso_image }}"
+        datacenter: "{{ provision_vm_esxi_datacenter }}"
+        datastore: "{{ iso_datastore }}"
+        path: "{{ iso_path }}/{{ iso_image }}"
+        validate_certs: no
+      register: command_result
+  
+  i  - debug:
+       msg: "{{ command_result }}"
+  
+    - name: fail the play if the previous command did not succeed
+      fail:
+        msg: "the command failed"
+      when: "'The write operation timed out' in command_result"
+  
+    - name: Remove working directory
+      delegate_to: localhost
+      file:
+        path: "{{ tempdir.path }}"
+        state: absent
+
+    # Create a new VM on an ESX server
+    # Returns changed = False when the VM already exists
+    # Returns changed = True and a adds ansible_facts from the new VM
+    # State will set the power status of a guest upon creation. Use powered_on to create and boot.
+    # Options ['state', 'vm_extra_config', 'vm_disk', 'vm_nic', 'vm_hardware', 'esxi'] are required together
+    # Note: vm_floppy support added in 2.0
+
+    - vsphere_guest:
+        valid_certs: no
+        vcenter_hostname: "{{ provision_vm_vcenter_hostname }}"
+        username: "{{ ansible_user }}@national"
+        password: "{{ ansible_password }}"
+        guest: "{{ inventory_hostname_short }}"
+        state: powered_on
+        vm_extra_config:
+          vcpu.hotadd: yes
+          mem.hotadd:  yes
+          notes: "{{ provision_vm_notes }}"
+          folder: "{{ provision_vm_esxi_datacenter }}/{{ inventory_hostname_short }}"
+        vm_disk:
+          disk1:
+            size_gb: "{{ provision_vm_disk }}"
+            type: thick
+            datastore: "{{ provision_vm_datastore }}"
+            # VMs can be put into folders. The value given here is either the full path
+            # to the folder (e.g. production/customerA/lamp) or just the last component
+            # of the path (e.g. lamp):
+            # folder: Birmingham/RVP Test and Staging/IEP
+        vm_nic:
+          nic1:
+            type: vmxnet3
+            network: "{{ provision_vm_network }}"
+            network_type: standard
+          nic2:
+            type: vmxnet3
+            network: "{{ provision_vm_network2 }}"
+            network_type: dvs
+        vm_hardware:
+          memory_mb: 65536
+          num_cpus: 8
+          osid: ubuntu64Guest
+          scsi: lsi
+          vm_cdrom:
+            type: "iso"
+             iso_path: "{{ iso_datastore }}/ISOs/ansible/{{ inventory_hostname_short }}.iso"
+#          vm_floppy:
+#            type: "image"
+#            image_path: "DatastoreName/floppy-image.flp"
+        esxi:
+          datacenter: MyDatacenter
+          hostname: esx001.mydomain.local
+      delegate_to: localhost

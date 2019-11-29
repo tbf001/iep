@@ -1,0 +1,694 @@
+---
+# Setup Mysql Active Server for database replication
+- name: Setup Mysql Replication on Active CC server
+  hosts: ccactive
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Modify IPTables to allow MySQL Replocation traffic from slave
+    iptables:
+      chain: INPUT
+      ctstate: NEW,ESTABLISHED
+      protocol: tcp
+      source: "{{ mysql_replication_slave }}"
+      source_port: 1024:65535
+      destination: "{{ mysql_replication_slave }}"
+      destination_port: 3306
+      jump: ACCEPT
+      action: insert
+    become: yes
+
+  - name: Modify IPTables to allow MySQL Replocation traffic master
+    iptables:
+      chain: INPUT
+      ctstate: NEW,ESTABLISHED
+      protocol: tcp
+      source: "{{ mysql_replication_slave }}"
+      source_port: 1024:65535
+      destination: "{{ mysql_replication_master }}"
+      destination_port: 3306
+      jump: ACCEPT
+      action: insert
+    become: yes
+
+  - name: Modify IPTables to allow MySQL Replocation traffic from floating IP
+    iptables:
+      chain: INPUT
+      ctstate: NEW,ESTABLISHED
+      protocol: tcp
+      source: "{{ mysql_replication_slave }}"
+      source_port: 1024:65535
+      destination: "{{ cc_floating_ip }}"
+      destination_port: 3306
+      jump: ACCEPT
+      action: insert
+    become: yes
+
+  - name: save iptables
+    command: iptables-save
+    sudo: true
+
+  - name: Add firewall settings to IPTables
+    blockinfile:
+      path: /etc/bbcnpf-defaultserver/firewall.d/11_accept_mysql
+      insertafter: EOF
+      block: |
+        #!/bin/bash
+
+        # make sure we can connect to MySQL
+        /sbin/iptables -I INPUT 3 -p tcp -s "{{ cc_floating_ip }}" --sport 1024:65535 -d "{{ mysql_replication_master }}" --dport 3306 -m state --state NEW,ESTABLISHED -j ACCEPT
+        /sbin/iptables -I INPUT 3 -p tcp -s "{{ mysql_replication_master }}" --sport 1024:65535 -d "{{ mysql_replication_master }}" --dport 3306 -m state --state NEW,ESTABLISHED -j ACCEPT
+        /sbin/iptables -I INPUT 3 -p tcp -s "{{ mysql_replication_slave }}" --sport 1024:65535 -d "{{ mysql_replication_master }}" --dport 3306 -m state --state NEW,ESTABLISHED -j ACCEPT
+
+        exit 0  
+
+  - name: Add Replication Settings to Active CC MySQL server cnf file
+    blockinfile:
+      path: /etc/mysql/mysql.conf.d/mysqld.cnf
+      insertafter: EOF
+      block: |
+        server-id = 1
+        report_host = "{{ mysql_replication_master }}"
+        log_bin = /var/log/mysql/mysql-bin.log
+        log_bin_index =/var/log/mysql/mysql-bin.log.index
+        relay_log = /var/log/mysql/mysql-relay-bin
+        relay_log_index = /var/log/mysql/mysql-relay-bin.index
+
+  - name: Restart MySQL Server on Active CC server
+    systemd:
+     state: restarted
+     name: mysql
+
+  - name: Add MySQl Replication User
+    mysql_user:
+     name: "{{ mysql_replication_user_name }}"
+     password: "{{ cc_mysql_replica }}"
+     login_user: deploy
+     login_password: "{{ cc_mysql_deploy }}"
+     priv: '*.*:REPLICATION SLAVE,REPLICATION CLIENT'
+     host: "%"
+     state: present
+
+# Setup Mysql Standby Server for database replication
+- name: Setup Mysql Replication on Standby CC server
+  hosts: ccstandby
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Modify IPTables to allow MySQL Replocation traffic from slave
+    iptables:
+      chain: INPUT
+      ctstate: NEW,ESTABLISHED
+      protocol: tcp
+      source: "{{ mysql_replication_slave }}"
+      source_port: 1024:65535
+      destination: "{{ mysql_replication_slave }}"
+      destination_port: 3306
+      jump: ACCEPT
+      action: insert
+    become: yes
+
+  - name: Modify IPTables to allow MySQL Replocation traffic master
+    iptables:
+      chain: INPUT
+      ctstate: NEW,ESTABLISHED
+      protocol: tcp
+      source: "{{ mysql_replication_slave }}"
+      source_port: 1024:65535
+      destination: "{{ mysql_replication_master }}"
+      destination_port: 3306
+      jump: ACCEPT
+      action: insert
+    become: yes
+
+  - name: Modify IPTables to allow MySQL Replocation traffic from floating IP
+    iptables:
+      chain: INPUT
+      ctstate: NEW,ESTABLISHED
+      protocol: tcp
+      source: "{{ mysql_replication_slave }}"
+      source_port: 1024:65535
+      destination: "{{ cc_floating_ip }}"
+      destination_port: 3306
+      jump: ACCEPT
+      action: insert
+    become: yes
+
+  - name: Add firewall settings to IPTables
+    blockinfile:
+      path: /etc/bbcnpf-defaultserver/firewall.d/11_accept_mysql
+      insertafter: EOF
+      block: |
+        #!/bin/bash
+
+        # make sure we can connect to MySQL
+        /sbin/iptables -I INPUT 3 -p tcp -s "{{ cc_floating_ip }}" --sport 1024:65535 -d "{{ mysql_replication_slave }}" --dport 3306 -m state --state NEW,ESTABLISHED -j ACCEPT
+        /sbin/iptables -I INPUT 3 -p tcp -s "{{ mysql_replication_master }}" --sport 1024:65535 -d "{{ mysql_replication_slave }}" --dport 3306 -m state --state NEW,ESTABLISHED -j ACCEPT
+        /sbin/iptables -I INPUT 3 -p tcp -s "{{ mysql_replication_slave }}" --sport 1024:65535 -d "{{ mysql_replication_slave }}" --dport 3306 -m state --state NEW,ESTABLISHED -j ACCEPT
+
+        exit 0
+
+  - name: Restart MySQL Server on Standby CC server
+    systemd:
+     state: restarted
+     name: mysql
+
+  - name: Add MySQl Replication User
+    mysql_user:
+     name: "{{ mysql_replication_user_name }}"
+     password: "{{ cc_mysql_replica }}"
+     login_user: deploy
+     login_password: "{{ cc_mysql_deploy }}"
+     priv: '*.*:REPLICATION SLAVE,REPLICATION CLIENT'
+     host: "%"
+     state: present
+
+# Enable Mysql Active Server for database replication
+- name: Enable Mysql Replication on Active CC server
+  hosts: ccactive
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Capture master replication status.
+    mysql_replication:
+      mode: getmaster
+      login_user: root
+      login_password: "{{ mysql_root_password }}"
+    register: binlog
+
+  - name: Add master return values to dummy host
+    add_host:
+      name: master_value_holder
+      master_log_file: "{{ binlog.File }}"
+      master_log_pos: "{{ binlog.Position }}"
+
+  - name: Configure CC Active as master replication server
+    mysql_replication:
+      mode: changemaster
+      login_user: root
+      login_password: "{{ mysql_root_password }}"
+      master_host: "{{ mysql_replication_master }}"
+
+# Enablble MySQL replication
+- name: Enable Mysql Replication on Standby CC server
+  hosts: ccstandby
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Configure replication slave to master.
+    mysql_replication:
+      mode: changemaster
+      login_user: root
+      login_password: "{{ mysql_root_password }}"
+      master_host: "{{ mysql_replication_master }}"
+      master_user: "{{ mysql_replication_user_name }}"
+      master_password: "{{ cc_mysql_replica }}"
+      master_log_file: "{{ hostvars['master_value_holder']['master_log_file'] }}"
+      master_log_pos: "{{ hostvars['master_value_holder']['master_log_pos'] }}"
+    ignore_errors: true
+
+  - name: Add Replication Settings to Standby CC MySQL server cnf file
+    blockinfile:
+      path: /etc/mysql/mysql.conf.d/mysqld.cnf
+      insertafter: EOF
+      block: |
+        server-id = 2
+        read_only = 1
+        report_host = "{{ mysql_replication_slave }}"
+        log_bin = /var/log/mysql/mysql-bin.log
+        log_bin_index =/var/log/mysql/mysql-bin.log.index
+        relay_log = /var/log/mysql/mysql-relay-bin
+        relay_log_index = /var/log/mysql/mysql-relay-bin.index
+
+  - name: Start MySQL Slave server
+    mysql_replication:
+      mode: startslave
+      login_user: replication_user
+      login_password: "{{ cc_mysql_replica }}"
+
+# Install Cluster Control
+- name: Install Cluster Control
+  hosts: clustercontrol
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: hack to resolve Problem with MergeList Issue
+    sudo: true
+    shell: 'find /var/lib/apt/lists -maxdepth 1 -type f -exec rm -v {} \;'
+
+  - name: Clean unwanted olderstuff
+    apt:
+      autoremove: yes
+      purge: yes
+
+  - name: Install Cluster Control Packages with APT
+    apt:
+     name:
+     - clustercontrol-controller
+     - clustercontrol
+     - clustercontrol-cmonapi
+     - clustercontrol-ssh
+     - clustercontrol-notifications
+     - clustercontrol-cloud
+     - clustercontrol-clud
+     update_cache: yes
+     state: present
+    environment:
+     http_proxy: "{{proxy_env}}"
+
+# Enable Mysql Active Server for database replication
+- name: Enable Mysql Replication on Active CC server
+  hosts: ccactive
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Setup cmon database
+    mysql_db:
+     name: cmon
+     login_user: deploy
+     login_password: "{{ cc_mysql_deploy }}"
+     state: present
+
+  - name: setup dcps database
+    mysql_db:
+     name: dcps
+     login_user: deploy
+     login_password: "{{ cc_mysql_deploy }}"
+     state: present
+
+  - name: Add additional CMON grants for %
+    mysql_user:
+     name: cmon
+     host: "%"
+     password: "{{ cmon_password }}"
+     priv: '*.*:ALL,GRANT'
+     login_user: deploy
+     login_password: "{{ cc_mysql_deploy }}"
+     state: present
+
+  - name: Import cmon schema
+    mysql_db:
+      state: import
+      name: all
+      login_user: root
+      login_password: "{{ mysql_root_password }}"
+      target: /usr/share/cmon/cmon_db.sql
+
+  - name: Import cmon data
+    mysql_db:
+      state: import
+      name: all
+      login_user: root
+      login_password: "{{ mysql_root_password }}"
+      target: /usr/share/cmon/cmon_data.sql
+
+  - name: Import dcps schema
+    mysql_db:
+      state: import
+      name: all
+      login_user: root
+      login_password: "{{ mysql_root_password }}"
+      target: /var/www/html/clustercontrol/sql/dc-schema.sql
+
+  - name: create an empty cmon configuration file
+    file:
+      path: "/etc/cmon.cnf"
+      state: touch
+
+  - name: Change cmon MySQL password 
+    lineinfile:
+      path: /etc/cmon.cnf
+      regexp: '^mysql_password=cmon'
+      line: 'mysql_password="{{ cmon_password }}"'
+
+  - name: Setup cmon configuration file
+    blockinfile:
+      path: /etc/cmon.cnf
+      insertafter: EOF
+      block: |
+        hostname={{ cc_primary_ip }}
+        rpc_key={{ RPC_Token }}
+
+  - name: Run TakeIP on Active Cluster Control Server
+    ignore_errors: true
+    shell: 'bbcnpf-takeip ens160:cc'
+
+# Enable Mysql Standby Server and start database replication
+- name: Enable Mysql Replication on Standby CC server
+  hosts: ccstandby
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Add additional CMON grants for %
+    mysql_user:
+     name: cmon
+     host: "%"
+     password: "{{ cmon_password }}"
+     priv: '*.*:ALL,GRANT'
+     login_user: deploy
+     login_password: "{{ cc_mysql_deploy }}"
+     state: present
+
+  - name: create an empty cmon configuration file
+    file:
+      path: "/etc/cmon.cnf"
+      state: touch
+
+  - name: Change cmon MySQL password
+    lineinfile:
+      path: /etc/cmon.cnf
+      regexp: '^mysql_password=cmon'
+      line: 'mysql_password=""{{ cmon_password }}""'
+
+  - name: Add additional CMON grants for %
+    mysql_user:
+     name: cmon
+     host: "%"
+     priv: '*.*:ALL,GRANT'
+     login_user: deploy
+     login_password: "{{ cc_mysql_deploy }}"
+     state: present
+
+  - name: Setup cmon configuration file
+    blockinfile:
+      path: /etc/cmon.cnf
+      insertafter: EOF
+      block: |
+        hostname={{ cc_primary_ip }}
+        rpc_key={{ RPC_Token }}
+
+  - name: Start MySQL Slave server
+    mysql_replication:
+     login_user: root
+     login_password: "{{ mysql_root_password }}"
+     mode: startslave
+
+# Setup default cmon for event and cloud module service definition
+- name: Configure Cluster Control
+  hosts: clustercontrol
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: create an empty default cmon file
+    file:
+      path: "/etc/default/cmon"
+      state: touch
+
+  - name: Add settings for event and cloud module to cmon file
+    blockinfile:
+      path: /etc/default/cmon
+      insertafter: EOF
+      block: |
+        EVENTS_CLIENT="http://127.0.0.1:9510"
+        CLOUD_SERVICE="http://127.0.0.1:9518"
+
+  - name: Install OpenSSL
+    apt:
+     name:
+     - openssl
+     - python3-openssl
+     state: present
+    environment:
+     http_proxy: "{{proxy_env}}"
+
+  - name: Copy cert from cmon to ssl certs store
+    copy:
+     src: /var/www/cmonapi/ssl/server.crt
+     dest: /etc/ssl/certs/s9server.crt
+     remote_src: yes
+
+  - name: Copy key from cmon to ssl certs store
+    copy:
+     src: /var/www/cmonapi/ssl/server.key
+     dest: /etc/ssl/private/s9server.key
+     remote_src: yes
+
+  - name: Remove var www cmonapi ssl folder
+    file:
+      state: absent
+      path: /var/www/cmonapi/ssl
+
+  - name: Copy s9s config to Apache2 sites available
+    copy:
+     src: /var/www/clustercontrol/app/tools/apache2/s9s.conf
+     dest: /etc/apache2/sites-available/
+     remote_src: yes
+
+  - name: Copy s9s config with SSL to Apache2 sites available
+    copy:
+     src: /var/www/clustercontrol/app/tools/apache2/s9s-ssl.conf
+     dest: /etc/apache2/sites-available/
+     remote_src: yes
+
+  - name: Remove Apache2 default site
+    file:
+      state: absent
+      path: /etc/apache2/sites-enabled/000-default.conf
+
+  - name: Remove Apache2 default site ssl
+    file:
+      state: absent
+      path: /etc/apache2/sites-enabled/default-ssl.conf
+
+  - name: Remove Apache2 default site ssl conf
+    file:
+      state: absent
+      path: /etc/apache2/sites-enabled/001-default-ssl.conf
+
+  - name: Create symbolic link between sites available and sites enabled for s9s
+    file:
+      src:  /etc/apache2/sites-available/s9s.conf
+      dest: /etc/apache2/sites-enabled/001-s9s.conf
+      state: link
+
+  - name: Create symbolic link between sites available and sites enabled for s9s with SSL
+    file:
+      src:  /etc/apache2/sites-available/s9s-ssl.conf
+      dest: /etc/apache2/sites-enabled/001-s9s-ssl.conf
+      state: link
+
+  - name: Change SSLCertificateFile path to point to s9server.crt
+    lineinfile:
+      path: /etc/apache2/sites-available/s9s-ssl.conf
+      regexp: '^                SSLCertificateFile      /etc/ssl/certs/ssl-cert-snakeoil.pem'
+      line: '                SSLCertificateFile /etc/ssl/certs/s9server.crt'
+
+  - name: Change SSLCertificateKeyFile path to point to s9server.key
+    lineinfile:
+      path: /etc/apache2/sites-available/s9s-ssl.conf
+      regexp: '^                SSLCertificateKeyFile /etc/ssl/certs/s9server.key'
+      line: '                SSLCertificateKeyFile /etc/ssl/private/s9server.key'
+
+  - name: enabled ssl module
+    shell: a2enmod ssl
+    register: enable_ssl_result
+
+  - name: Display Results of shell a2enmod ssl command
+    debug:
+     msg: "{{enable_ssl_result.stdout}}"
+
+  - name: enabled rewrite module
+    shell: a2enmod rewrite
+    register: enable_rewrite_result
+
+  - name: Display Results of shell a2enmod rewrite command
+    debug:
+     msg: "{{enable_rewrite_result.stdout}}"
+
+  - name: enabled default-ssl module
+    shell: a2ensite default-ssl
+    register: enable_defaultssl_result
+
+  - name: Display Results of shell a2ensite default-ssl command
+    debug:
+     msg: "{{enable_defaultssl_result.stdout}}"
+
+  - name: Copy Cluster Control UI default bootstrap.php to live
+    copy:
+     src: /var/www/clustercontrol/bootstrap.php.default
+     dest: /var/www/clustercontrol/bootstrap.php
+     group: www-data
+     owner: www-data
+     mode: 0644
+     remote_src: yes
+
+  - name: Copy Cluster Control CMONAPI default bootstrap.php to live
+    copy:
+     src: /var/www/cmonapi/config/bootstrap.php.default
+     dest: /var/www/cmonapi/config/bootstrap.php
+     group: www-data
+     owner: www-data
+     mode: 0644
+     remote_src: yes
+
+  - name: Copy Cluster Control Database default database.php to live
+    copy:
+     src: /var/www/cmonapi/config/database.php.default
+     dest: /var/www/cmonapi/config/database.php
+     group: www-data
+     owner: www-data
+     mode: 0644
+     remote_src: yes
+
+  - file:
+      path: /var/www/html/clustercontrol/app/tmp
+      recurse: yes
+      mode: 0777
+
+  - file:
+      path: /var/www/html/clustercontrol/app/upload
+      recurse: yes
+      mode: 0777
+
+  - file:
+     path: /var/www/html/cmonapi/
+     owner: www-data
+     group: www-data
+     recurse: yes
+
+  - file:
+     path: /var/www/html/clustercontrol/
+     owner: www-data
+     group: www-data
+     recurse: yes
+
+  - name: Replace CMON_TOKEN in www CMONAPI config file bootstrap.php
+    replace:
+      dest: /var/www/cmonapi/config/bootstrap.php
+      regexp: 'GENERATED_CMON_TOKEN'
+      replace: '{{ RPC_Token }}'
+
+  - name: Remove CC_URL in www cmonapi config bootstrap.php
+    replace:
+      dest: /var/www/cmonapi/config/bootstrap.php
+      regexp: 'https://clustercontrol.severalnines.com'
+      replace: 'https://"{{ cc_floating_dns }}"/clustercontrol'
+
+  - name: Add Events settings to www CMONAPI file bootstrap.php
+    blockinfile:
+      path: /var/www/cmonapi/config/bootstrap.php
+      insertafter: EOF
+      block: |
+         define('CMON_EVENTS_ENABLED', true);
+         define('CMON_EVENTS_SSE_ENABLED', true);
+         define('CMON_EVENTS_HOST', '127.0.0.1');
+         define('CMON_EVENTS_PORT', 9510);
+
+  - name: Remove MySQL credentials for www CMONAPI from database.php
+    replace:
+      dest: /var/www/cmonapi/config/database.php
+      regexp: 'MYSQL_PASSWORD'
+      replace: '{{ cmon_password }}'
+
+  - name: Remove MySQL port for www CMONAPI from databses.php
+    replace:
+      dest: /var/www/cmonapi/config/database.php
+      regexp: 'MYSQL_PORT'
+      replace: '3306'
+
+  - name: Remove existing DBPORT line from www clustercontrol bootstrap.php
+    replace:
+      dest: /var/www/clustercontrol/bootstrap.php
+      regexp: 'DBPORT'
+      replace: '3306'
+
+  - name: Remove RPC_TOKEN line from www clustercontrol bootstrap.php
+    replace:
+      dest: /var/www/clustercontrol/bootstrap.php
+      regexp: 'RPCTOKEN'
+      replace: '{{ RPC_Token }}'
+
+  - name: Remove existing DBPASS line from cluster control bootstrap.php 
+    replace:
+      dest: /var/www/clustercontrol/bootstrap.php
+      regexp: 'DBPASS'
+      replace: '{{ cmon_password }}'
+
+  - name: Restart Apache Service
+    service:
+     name: apache2
+     state: restarted
+
+  - name: enable service cmon and ensure it is not masked
+    systemd:
+      name: cmon
+      enabled: yes
+      masked: no
+
+  - name: enable service cmon-ssh and ensure it is not masked
+    systemd:
+      name: cmon-ssh
+      enabled: yes
+      masked: no
+
+  - name: enable service cmon-events and ensure it is not masked
+    systemd:
+      name: cmon-events
+      enabled: yes
+      masked: no
+
+  - name: enable service cmon-cloud and ensure it is not masked
+    systemd:
+      name: cmon-cloud
+      enabled: yes
+      masked: no
+
+  - name: start service cmon
+    systemd:
+      name: cmon
+      state: started
+
+  - name: start service cmon-ssh
+    systemd:
+      name: cmon-ssh
+      state: started
+
+  - name: start service cmon-events
+    systemd:
+      name: cmon-events
+      state: started
+
+  - name: start service cmon-cloud
+    systemd:
+      name: cmon-cloud
+      state: started

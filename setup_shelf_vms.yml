@@ -1,0 +1,28 @@
+# Setup Mysql Active Server for database replication
+- name: Setup Mysql Replication on Active CC server
+  hosts: shelf
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Add ZFS repl user for shelf backup and DR
+    user:
+      name: repl-backup
+      password: "{{ zfsrepl_password }}"
+      comment: "ZFS Replication User"
+      shell: /bin/bash
+      group: admin
+      state: present
+
+  - name: Allow ZFS repl user passwordless sudo
+    lineinfile:
+      dest: /etc/sudoers
+      state: present
+      regexp: '^%repl-backup'
+      line: '%repl-backup ALL=(ALL) NOPASSWD: ALL'
+      validate: 'visudo -cf %s'
+

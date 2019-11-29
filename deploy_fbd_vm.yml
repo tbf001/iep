@@ -1,0 +1,22 @@
+---
+# Choose .yml var file for Deployment Machine - change the directory as necessary
+- hosts: localhost
+  gather_facts: no
+  become: yes
+  become_method: sudo
+  vars_files:
+    -  /home/ere-mid-tf/projects/project_1/iep/roles/WinInstall/vars/3gbbmapfbd6001.yml
+
+# Run the WinInstall Role - This should always be run first as it installs base Win 2012 OS per latest ATOS iso.
+  roles:
+  - WinInstall
+
+# Add your Roles/code under here to proceed after Windows Install
+#  tasks:
+#   - name: MAKE FILE
+#     win_file:
+#       delay: 60
+#       host: "{{ hostname }}.NATIONAL.CORE.BBC.CO.UK"
+#       path: C:/INSTALLATIONCOMPLETE.txt
+#       state: touch
+#     delegate_to: "{{ hostname }}.NATIONAL.CORE.BBC.CO.UK"     

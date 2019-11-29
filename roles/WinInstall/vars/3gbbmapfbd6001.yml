@@ -1,0 +1,72 @@
+---
+#############################################################
+# HOSTNAME AND USER DETAILS
+#############################################################
+
+#Provide hostname without domain suffix. Keep this lower case.
+hostname: 3gbbmapfbd6001
+#Set local Administrator password for the machine
+admin_pass: "6001b7s69c69!"
+ere_user: "{{ lookup('env','USER') }}"
+ere_pass: "{{ ansible_password }}"
+
+
+#############################################################
+# VM LOCATION AND SERVER ATTRIBUTES
+#############################################################
+
+#vm_osid must = "windows8Server64Guest". Please provide short summary for notes section on VSphere.
+vm_osid: windows8Server64Guest
+vm_notes: BM TS IEP POC FBD Signiant
+
+#Provide ATOS config for SNMP and server type. Valid roles = [AP: Application Server] [DT: Data Server] [DB: Database Server] [PR: Print Server] [WB: Web Server]
+role: AP
+snmp_contact: Broadcast Support Centre
+snmp_location: BBC Birmingham, BM Test & Staging
+asset:
+description: TS IEP POC FBD Signiant
+build_engineer: Timothy Fry
+cr_ref:
+
+#VM: Choose VM Location. vm_vcenter_host must be either VLRC1 or VLRC2 URL (or other VCenter hosting). datacenter, cluster and hostname must all be valid names from VSphere. vm_esxi_hostname and vm_vcenter_host should be the FQDN.
+vm_vcenter_host: 3gbv1apvmw1001.national.core.bbc.co.uk
+vm_esxi_datacenter: Birmingham
+vm_cluster: BM Test & Staging
+vm_esxi_hostname: 3gbbmvhesx6011.national.core.bbc.co.uk
+# Do not include first forward-slash on Iso_path variable.
+# This should not change. Make sure ISO_name = "WinInstall.iso" and ISO_path = "ISOs/ansible/"
+ISO_path: ISOs/ansible/
+ISO_name: WinInstall.iso
+# Change ISO datastore to the datastore holding WinInstall.iso in the datacenter you are deploying to. Current iso locations = [BM T&S = TS S1 DS BACKUP] [VLRC1 = V1 S2 BUILD 1] [VLRC2 = V2 S2 BUILD 1]
+ISO_datastore: TS S1 DS BACKUP
+
+
+###########################################################
+# VM HARDWARE & SOFTWARE CONFIGURATION
+##########################################################
+
+#true to install sophos, false to not install sophos
+install_sophos: true
+
+#vm_hdd is in GBs. vm_memory is in MBs
+vm_cpus: 8
+vm_memory: 8000
+
+#Select whether there will be one or two HDDs with the two_HDDs variable, setting it as either true or false. No other value is valid.
+two_HDDs: false
+
+#HDD sizes. minimum HDD space necessary = 170GB
+vm_hdd1: 250
+vm_hdd1_datastore: TS S1 VM IEP
+vm_hdd2: 
+vm_hdd2_datastore:
+
+#Provide config details for network Adapters. VM Machines default Adapter names as "Ethernet0" and "Ethernet1". vm_network MUST be valid network name from vSphere and not VLAN number. 
+ip1: 10.72.127.120
+gateway1: 10.72.127.254
+netmask1: 255.255.255.0
+dns1_1: 10.72.136.53
+dns2_1: 10.72.136.4
+adapter_alias1: Ethernet0
+vm_network1: TS IEP Production Edit Network
+...

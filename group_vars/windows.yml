@@ -1,0 +1,14 @@
+# These variables will be used for all hosts in the [windows] group in hosts file. Set this file one then encrypt with ansible-vault
+# ansible user = <ere_user>@NATIONAL.CORE.BBC.CO.UK
+ansible_user: "{{ lookup('env','USER') }}@NATIONAL.CORE.BBC.CO.UK"
+#ansible_user: ere-mid-rt@NATIONAL.CORE.BBC.CO.UK
+ansible_pass: "{{ ansible_password }}"
+
+# leave these ones alone
+ansible_connection: winrm
+ansible_port: 5985
+ansible_winrm_scheme: http
+ansible_winrm_transport: kerberos
+ansible_winrm_message_encryption: always
+ansible_winrm_server_cert_validation: ignore
+#ansible_winrm_kerberos_delegation: true

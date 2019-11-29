@@ -1,0 +1,429 @@
+---
+- name: AD Integration for Ubuntu
+  hosts: 1stcache
+  gather_facts: yes
+  serial: 2
+  vars:
+    ansible_host: "{{ provision_ipaddress }}"
+    ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+  tasks:
+  - name: Disable BBCNPF Join Domain Cron Job
+    become: yes
+    become_method: sudo
+    replace:
+      path: /etc/cron.daily/bbcnpf-joindomain-usermanage-cron
+      regexp: '^/usr/bin/bbcnpf-joindomain-usermanage  >> /var/log/bbcnpf-joindomain.log 2>&1'
+      replace: '#/usr/bin/bbcnpf-joindomain-usermanage  >> /var/log/bbcnpf-joindomain.log 2>&1'
+    ignore_errors: true
+   
+  - name: Install required packages
+    become: yes
+    become_method: sudo
+    apt:
+      name: "{{ item }}"
+      update_cache: yes
+      cache_valid_time: 300
+      state: latest
+    with_items:
+      - krb5-user
+      - samba
+      - sssd
+      - sssd-ad
+      - realmd
+      - policykit-1
+      - libpam-sss
+      - adcli
+      - libnss-sss
+      - sssd-tools
+      - packagekit
+      - python-pexpect
+
+#  - name: Check if machine is bound with realm
+#    become: yes
+#    become_method: sudo
+#    command: /bin/bash -c "realm list | grep sssd"
+#    register: realmd_bound
+#    changed_when: false
+#    ignore_errors: true
+
+#  - name: Join system to AD
+#    become: yes
+#    become_method: sudo
+#    expect:
+      #command: /bin/bash -c "/usr/sbin/realm join --user={{ ansible_user }} NATIONAL.CORE.BBC.CO.UK"
+      #command: /bin/bash -c "{{ ''.join(('/usr/sbin/realm join --user=', {{ ansible_user }}, ' NATIONAL.CORE.BBC.CO.UK')) }}"
+#      command: /bin/bash -c "/usr/sbin/realm join --user=ere-mid-tf NATIONAL.CORE.BBC.CO.UK"
+#      responses:
+#        Password for *: "{{ ansible_password }}"
+#    when: realmd_bound is failed
+
+  - name: Backup existing Kerberos configuration
+    become: yes
+    become_method: sudo
+    shell: /bin/bash -c 'mv /etc/krb5.conf /etc/krb5.conf_backup_ansible'
+    args:
+      creates: /etc/krb5.conf_backup_ansible
+
+  -name: Kerberos Configuration
+    become: yes
+    become_method: sudo
+    copy:
+      dest: /etc/krb5.conf
+      content: |
+        [libdefaults]
+          default_realm = NATIONAL.CORE.BBC.CO.UK
+          # From Ubuntu Help Active Directory with Kerberos 12 Apr 2019 added by Tim
+          ticket_lifetime = 24h #
+          renew_lifetime = 7d
+          dns_lookup_realm = true
+          dns_lookup_kdc = true
+
+        [logging]
+          default = FILE:/var/log/krb5libs.log
+          kdc = FILE:/var/log/krb5kdc.log
+          admin_server = FILE:/var/log/kadmind.log
+          #  default = SYSLOG:INFO:DAEMON
+          #  kdc = SYSLOG:INFO:DAEMON
+          #  admin_server = SYSLOG:INFO:DAEMON
+
+          # The following krb5.conf variables are only for MIT Kerberos.
+          krb4_config = /etc/krb.conf
+          krb4_realms = /etc/krb.realms
+          kdc_timesync = 1
+          ccache_type = 4
+          forwardable = true
+          proxiable = true
+
+        [login]
+          krb4_convert = true
+          krb4_get_tickets = false
+
+        [appdefaults]
+          pam = {
+          debug = false
+          ticket_lifetime = 10h
+          renew_lifetime = 7d
+          forwardable = true
+          krb4_convert = false
+          validate = true
+          }
+
+       [realms]
+         NATIONAL.CORE.BBC.CO.UK = {
+         kdc = bgbbmdc1001.national.core.bbc.co.uk
+         admin_server = bgbbmdc1001.national.core.bbc.co.uk
+         default_domain = NATIONAL.CORE.BBC.CO.UK
+         }
+
+       [domain_realm]
+         .national.core.bbc.co.uk = NATIONAL.CORE.BBC.CO.UK
+         national.core.bbc.co.uk = NATIONAL.CORE.BBC.CO.UK
+
+  - name: Set krb5.conf permissions
+    become: yes
+    become_method: sudo
+    file:
+      path: /etc/krb5.conf
+      owner: root
+      group: root
+      mode: 0600
+
+  - name: Backup existing Samba configuration
+    become: yes
+    become_method: sudo
+    shell: /bin/bash -c 'mv /etc/samba/smb.conf /etc/samba/smb.conf_backup_ansible'
+    args: 
+      creates: /etc/samba/smb.conf_backup_ansible
+
+  - name: Configure Samba
+    become: yes
+    become_method: sudo
+    copy:
+      dest: /etc/samba/smb.conf
+      content: |
+        [global]
+           realm = NATIONAL.CORE.BBC.CO.UK
+           netbios name = 3gbbmfsiep6012
+           security = ads
+           template homedir = /home/%D/%U
+           template shell = /bin/bash
+           client signing = yes
+           client use spnego = yes
+           kerberos method = secrets and keytab
+           server string = %h server (Samba, Ubuntu)
+           dns proxy = no
+           log file = /var/log/samba/log.%m
+           max log size = 1000
+           syslog = 0
+           panic action = /usr/share/samba/panic-action %d
+           server role = standalone server
+           passdb backend = tdbsam
+           obey pam restrictions = yes
+           unix password sync = yes
+           passwd program = /usr/bin/passwd %u
+           passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
+           pam password change = yes
+           map to guest = bad user
+           usershare allow guests = yes
+           local master = no
+           preferred master = no
+           domain master = no
+           include = /etc/samba/bbcere.conf
+           winbind use default domain = true
+           winbind offline logon = false
+           winbind enum users = no
+           winbind enum groups = no
+           dedicated keytab file = /etc/krb5.keytab
+         vfs objexts = acl_xattr
+         map acl inherit = Yes
+         store dcs attributes = Yes
+
+  - name: Set smb.conf permissions
+    become: yes
+    become_method: sudo
+    file:
+      path: /etc/samba/smb.conf
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: Backup existing SSSD configuration
+    become: yes
+    become_method: sudo
+    shell: /bin/bash -c 'mv /etc/sssd/sssd.conf /etc/sssd/sssd.conf_backup_ansible'
+    args:
+      creates: /etc/sssd/sssd.conf_backup_ansible
+
+  - name: SSSD Configuration
+    become: yes
+    become_method: sudo
+    copy:
+      dest: /etc/sssd/sssd.conf
+      content: |
+        [sssd]
+        domains = NATIONAL.CORE.BBC.CO.UK
+        default_domain_suffix = national.core.bbc.co.uk
+        config_file_version = 2
+        reconnection_retries = 3
+        sbus_timeout = 30
+        services = nss, pam, sudo, ssh
+
+        [nss]
+        debug_level = 0x0270
+        filter_groups = root,daemon,bin,sys,adm,tty,disk,lp,mail,news,uucp,man,proxy,kmem,dialout,fax,voice,cdrom,floppy,tape,sudo,audio,$
+        filter_users = root,daemon,bin,sys,sync,games,man,lp,mail,news,uucp,proxy,www-data,backup,list,irc,gnats,nobody,systemd-timesync,$
+        reconnection_retries = 3
+        entry_cache_nowait_percentage = 50
+
+        [pam]
+        debug_level = 0x0270
+        filter_groups = root,daemon,bin,sys,adm,tty,disk,lp,mail,news,uucp,man,proxy,kmem,dialout,fax,voice,cdrom,floppy,tape,sudo,audio,$
+        filter_users = root,daemon,bin,sys,sync,games,man,lp,mail,news,uucp,proxy,www-data,backup,list,irc,gnats,nobody,systemd-timesync,$
+        reconnection_retries = 3
+        offline_failed_login_attempts = 5
+        offline_failed_login_delay = 5
+        # allow PAM to cache user details for this long
+        # this can improve login times
+        # but it also delays AD changes from being seen
+        pam_id_timeout = 600
+        pam_pwd_expiration_warning = 5
+
+        [domain/national.core.bbc.co.uk]
+        timeout = 60
+        debug_level = 0x0270
+        dns_discovery_domain = national.core.bbc.co.uk
+        ##id_provider = ldap
+        id_provider = ad
+        ##auth_provider = krb5
+        auth_provider = ad
+        access_provider = ad
+        ##chpass_provider = krb5
+        ad_domain = national.core.bbc.co.uk
+        ldap_id_mapping = True
+        #use_fully_qualified_names = False
+        krb5_realm = NATIONAL.CORE.BBC.CO.UK
+        realmd_tags = manages-system joined-with-adcli
+        default_shell = /bin/bash
+        override_homedir = /home/%d/%u
+        enumerate = False
+        ignore_group_members = True
+        #access_provider = simple
+        access_provider = ad
+        simple_allow_groups = 31500__Manage Servers
+
+  - name: Set sssd.conf permissions
+    become: yes
+    become_method: sudo
+    file:
+      path: /etc/sssd/sssd.conf
+      owner: root
+      group: root
+      mode: 0600
+
+  - name: Add pam_mkhomedir.so to /etc/pam.d/common-session
+    become: yes
+    become_method: sudo
+    lineinfile:
+      path: "/etc/pam.d/common-session"
+      line: "session required        pam_mkhomedir.so skel=/etc/skel/ umask=0022"
+      insertafter: "# end of pam-auth-update config"
+  
+#  - name: Add pam_sss.so to /etc/pam.d/common-session
+#    become: yes
+#    become_method: sudo
+#    lineinfile:
+#      path: "/etc/pam.d/common-session"
+#      line: "session optional        pam_sss.so"
+#      insertafter: "session required        pam_mkhomedir.so skel=/etc/skel/ umask=0022"
+
+#  - name: Create parent home directory for domain users
+#    become: yes
+#    become_method: sudo
+#    file:
+#      path: /home/national.core.bbc.co.uk
+#      state: directory
+#      mode: 0755
+
+#  - name: Restart SSSD
+#    become: yes
+#    become_method: sudo
+#    service:
+#      name: sssd
+#      state: restarted
+
+  - name: Check if machine is bound with realm
+    become: yes
+    become_method: sudo
+    command: /bin/bash -c "realm list | grep sssd"
+    register: realmd_bound
+    changed_when: false
+    ignore_errors: true
+
+  - name: Join system to AD
+    become: yes
+    become_method: sudo
+    expect:
+      #command: /bin/bash -c "/usr/sbin/realm join --user={{ ansible_user }} NATIONAL.CORE.BBC.CO.UK"
+      #command: /bin/bash -c "{{ ''.join(('/usr/sbin/realm join --user=', {{ ansible_user }}, ' NATIONAL.CORE.BBC.CO.UK'))$
+      command: /bin/bash -c "/usr/sbin/realm join --user=ere-mid-tf NATIONAL.CORE.BBC.CO.UK"
+      responses:
+        Password for *: "{{ ansible_password }}"
+    when: realmd_bound is failed
+
+  - name: Add domain users to sudoers file
+    become: yes
+    become_method: sudo
+    lineinfile:
+      path: "/etc/sudoers"
+      line: '%domain\ users ALL=(ALL) ALL'
+  
+  - name: Hold bbcnpf-defaultserver package
+    become: yes
+    become_method: sudo
+    dpkg_selections:
+      name: bbcnpf-defaultserver
+      selection: hold
+
+  - name: Remove bbcnpf-joindomain
+    become: yes
+    become_method: sudo
+    apt:
+      name: bbcnpf-joindomain
+      state: absent
+    ignore_errors: true
+
+  - name: Unhold bbcnpf-defaultserver package
+    become: yes
+    become_method: sudo
+    dpkg_selections:
+      name: bbcnpf-defaultserver
+      selection: install
+
+  - name: Create Samba configuration for local shares
+    become: yes
+    become_method: sudo
+    copy:
+      dest: /etc/samba/bbcere.conf
+      content: |
+        [test]
+        comment = Test Folder
+        path = /home
+        browsable = yes
+        read only = yes
+        guest ok = yes
+        valid users = @'31500::T-Manage All Servers@national.core.bbc.co.uk'
+
+  - name: Set bbcere.conf permissions
+    become: yes
+    become_method: sudo
+    file:
+      path: /etc/samba/bbcere.conf
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: Restart Samba processes
+    become: yes
+    become_method: sudo
+    service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+      - smbd
+      - nmbd
+
+  - name: Check if machine is bound with ads
+    become: yes
+    become_method: sudo
+    command: /bin/bash -c "net ads status -k | grep distinguishedName"
+    register: ads_bound
+    changed_when: false
+    ignore_errors: true
+
+  - name: Join system to AD for Samba
+    become: yes
+    become_method: sudo
+    command: /bin/bash -c "net ads join -k"
+    when: ads_bound is failed
+
+  - name: Restart Samba processes
+    become: yes
+    become_method: sudo
+    service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+      - smbd
+      - nmbd
+
+  - name: Change issue file
+    become: yes
+    become_method: sudo
+    lineinfile:
+      path: /etc/issue
+      regexp: '^Login available from NATIONAL'
+      line: 'Login available from NATIONAL'
+
+  - name: Change issue.net file
+    become: yes
+    become_method: sudo
+    lineinfile:
+      path: /etc/issue.net
+      regexp: '^Login available from NATIONAL'
+      line: 'Login available from NATIONAL'
+
+  - name: Check if old AD accounts exist locally
+    become: yes
+    become_method: sudo
+    command: /bin/bash -c 'grep "x:2000" /etc/passwd'
+    register: ad_local
+    changed_when: false
+    ignore_errors: true
+
+  - name: Remove accounts generated by bbcnpf-joindomain (keeps directories)
+    become: yes
+    become_method: sudo
+    shell: nohup /bin/bash -c 'pkill -u ere-mid-rt ; while IFS=":" read -r user x uid x; do [[ $uid -gt 1999 && $uid -lt 2500 ]] && userdel "$user"; done </etc/passwd ; groupdel domainusers'
+    ignore_errors: true
+    when: ad_local is succeeded

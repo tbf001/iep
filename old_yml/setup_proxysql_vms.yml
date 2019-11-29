@@ -1,0 +1,27 @@
+---
+# Setup ProxySQL Servers for galera cluster
+- name: Setup Mysql Replication on Active CC server
+  hosts: proxysql
+  gather_facts: no
+  become: yes
+  become_method: sudo
+
+  tasks:
+  - name: Import Vars
+    include_vars: "{{ playbook_dir }}/group_vars/all"
+
+  - name: Install ProxySQL with APT
+    apt:
+     name:
+     - proxysql
+     update_cache: yes
+     state: present
+     allow_unauthenticated: yes
+
+  - name: Install KeepAliveD with APT
+    apt:
+     name:
+     - keepalived
+     update_cache: yes
+     state: present
+     allow_unauthenticated: yes
